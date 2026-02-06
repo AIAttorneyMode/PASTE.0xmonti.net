@@ -1,6 +1,16 @@
-# Changelog for **[Paste](https://phpaste.sourceforge.io/)** (Updated on 25/10/2025)
+# Changelog for **[Paste](https://phpaste.sourceforge.io/)** (Updated on 06/02/2026)
 
-Current - 3.3
+3.4
+* Fixed editing of Pastes
+* Added pastebin.com-like slug support for URLs (default 8 chars)
+* Show a "View differences" link for forked Pastes
+* Show a list of all forks on an original paste
+* Added a json API (see API.md/https://paste.boxlabs.uk/api-docs.php) and a python CLI client.
+* Updated example nginx conf (for URLs)
+* Added option to disable "Recent Pastes" in sidebar
+* Bug fixes
+
+Previous version - 3.3
 * Improved autodetection for syntax highlighting for both GeSHi and Highlight.php
 	Fix sluggish behaviour with Highlight.php's autodetection of very large plain text especially.
 	Added more heuristic detection handling, improved efficiency of Paste's autodetect

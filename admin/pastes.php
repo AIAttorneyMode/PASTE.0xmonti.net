@@ -303,9 +303,17 @@ $per_page_safe = (int)$per_page;
 $offset_safe   = (int)$offset;
 
 // NOTE: join in comment counts
+// Check if slug column exists for backwards compatibility
+$has_slug_col = false;
+try {
+    $chk = $pdo->query("SHOW COLUMNS FROM pastes LIKE 'slug'");
+    $has_slug_col = ($chk && $chk->rowCount() > 0);
+} catch (Exception $e) { /* ignore */ }
+
+$slug_col = $has_slug_col ? 'p.slug,' : '';
 $sql = "
 SELECT 
-    p.id, p.member, p.ip, p.visible, p.title,
+    p.id, {$slug_col} p.member, p.ip, p.visible, p.title,
     p.code,
     p.date AS posted_at,
     UNIX_TIMESTAMP(p.date) AS posted_ts,
@@ -635,10 +643,17 @@ document.addEventListener('DOMContentLoaded', function() {
         <?php
           $pid = (int)filter_var($_GET['comments'], FILTER_SANITIZE_NUMBER_INT);
 
-          // Fetch paste title/member for header
-          $pinfo = $pdo->prepare("SELECT title, member FROM pastes WHERE id=?");
+          // Fetch paste title/member/slug for header
+          $slug_select = $has_slug_col ? ', slug' : '';
+          $pinfo = $pdo->prepare("SELECT title, member{$slug_select} FROM pastes WHERE id=?");
           $pinfo->execute([$pid]);
           $pmeta = $pinfo->fetch();
+          
+          // Determine URL for viewing paste
+          $paste_slug = isset($pmeta['slug']) && $pmeta['slug'] !== '' ? $pmeta['slug'] : (string)$pid;
+          $paste_open_url = (string)$mod_rewrite === '1' 
+              ? '../' . rawurlencode($paste_slug)
+              : '../paste.php?id=' . urlencode($paste_slug);
 
           // Count comments
           $ct = $pdo->prepare("SELECT COUNT(*) AS c FROM paste_comments WHERE paste_id=:pid");
@@ -677,7 +692,7 @@ document.addEventListener('DOMContentLoaded', function() {
               </div>
               <div>
                 <a href="<?php echo htmlspecialchars($_SERVER['PHP_SELF']); ?>" class="btn btn-soft">Back to Pastes</a>
-                <a href="<?php echo htmlspecialchars('../paste.php?id='.$pid); ?>" class="btn btn-soft" target="_blank">Open Paste</a>
+                <a href="<?php echo htmlspecialchars($paste_open_url); ?>" class="btn btn-soft" target="_blank">Open Paste</a>
               </div>
             </div>
 
@@ -846,6 +861,11 @@ document.addEventListener('DOMContentLoaded', function() {
                           if ($visibility_filter !== 'all') $qs['visibility'] = $visibility_filter;
                           if ($q !== '') $qs['q'] = $q;
                           $qsBase = $qs ? '&'.http_build_query($qs) : '';
+                          // Use slug if available, otherwise fall back to ID
+                          $paste_url_id = isset($row['slug']) && $row['slug'] !== '' ? $row['slug'] : (string)$row['id'];
+                          $paste_view_url = (string)$mod_rewrite === '1' 
+                              ? '../' . rawurlencode($paste_url_id)
+                              : '../paste.php?id=' . urlencode($paste_url_id);
                         ?>
                         <tr>
                           <td><input type="checkbox" class="row-select" name="selected_ids[]" value="<?php echo (int)$row['id']; ?>"></td>
@@ -866,7 +886,7 @@ document.addEventListener('DOMContentLoaded', function() {
                           <td><?php echo htmlspecialchars($visibility); ?></td>
                           <td><a href="?ban=<?php echo (int)$row['id']; ?>&page=<?php echo (int)$page . $qsBase; ?>" class="btn btn-warning btn-sm ban-paste">Ban IP + Delete</a></td>
                           <td><a href="?details=<?php echo (int)$row['id']; ?>" class="btn btn-soft btn-sm">Details</a></td>
-                          <td><a href="../paste.php?id=<?php echo (int)$row['id']; ?>" class="btn btn-soft btn-sm" target="_blank">View</a></td>
+                          <td><a href="<?php echo htmlspecialchars($paste_view_url); ?>" class="btn btn-soft btn-sm" target="_blank">View</a></td>
                           <td><a href="?delete=<?php echo (int)$row['id']; ?>&page=<?php echo (int)$page . $qsBase; ?>" class="btn btn-danger btn-sm delete-paste">Delete</a></td>
                         </tr>
                       <?php endforeach; ?>

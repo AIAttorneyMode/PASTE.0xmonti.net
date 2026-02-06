@@ -41,14 +41,23 @@ date_default_timezone_set('UTC');
  * Data access
  * =======================================================*/
 
-// Load paste by ID, decrypting as needed. Returns ['title','content','code'] or null
-function load_paste(PDO $pdo, int $id): ?array {
+// Load paste by ID or slug, decrypting as needed. Returns ['id','slug','title','content','code'] or null
+function load_paste(PDO $pdo, $identifier): ?array {
     try {
-        $st = $pdo->prepare("SELECT id,title,content,code,encrypt FROM pastes WHERE id=? LIMIT 1");
-        $st->execute([$id]);
-        $r = $st->fetch();
+        // Use the shared lookup function if available
+        if (function_exists('getPasteByIdentifier')) {
+            $r = getPasteByIdentifier($pdo, (string)$identifier);
+        } else {
+            // Fallback for numeric ID
+            $st = $pdo->prepare("SELECT id,slug,title,content,code,encrypt FROM pastes WHERE id=? LIMIT 1");
+            $st->execute([(int)$identifier]);
+            $r = $st->fetch();
+        }
+        
         if (!$r) return null;
 
+        $id      = (int)$r['id'];
+        $slug    = (string)($r['slug'] ?? '');
         $title   = (string)$r['title'];
         $content = (string)$r['content'];
         $code    = (string)($r['code'] ?? 'autodetect');
@@ -62,12 +71,14 @@ function load_paste(PDO $pdo, int $id): ?array {
         $content = html_entity_decode($content, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8');
 
         return [
+            'id'      => $id,
+            'slug'    => $slug,
             'title'   => $title,
             'content' => $content,
             'code'    => $code,
         ];
     } catch (Throwable $e) {
-        error_log("diff.php load_paste($id): ".$e->getMessage());
+        error_log("diff.php load_paste($identifier): ".$e->getMessage());
         return null;
     }
 }
@@ -610,12 +621,30 @@ try {
     $default_theme = $default_theme ?? 'default';
 }
 
-/* ---------- Paste IDs from query (supports ?a & ?b) ---------- */
-$lid = isset($_GET['a']) ? (int)$_GET['a'] : (isset($_GET['left_id']) ? (int)$_GET['left_id'] : 0);
-$rid = isset($_GET['b']) ? (int)$_GET['b'] : (isset($_GET['right_id']) ? (int)$_GET['right_id'] : 0);
+/* ---------- Paste IDs from query (supports ?a & ?b - can be numeric or slug) ---------- */
+$lid = isset($_GET['a']) ? trim($_GET['a']) : (isset($_GET['left_id']) ? trim($_GET['left_id']) : '');
+$rid = isset($_GET['b']) ? trim($_GET['b']) : (isset($_GET['right_id']) ? trim($_GET['right_id']) : '');
 
-if ($lid) { $p = load_paste($pdo, $lid); if ($p){ $left=$p['content'];  $leftLabel='Paste #'.$lid;  $leftLangFromDB  = (string)$p['code']; } }
-if ($rid) { $p = load_paste($pdo, $rid); if ($p){ $right=$p['content']; $rightLabel='Paste #'.$rid; $rightLangFromDB = (string)$p['code']; } }
+if ($lid) { 
+    $p = load_paste($pdo, $lid); 
+    if ($p) { 
+        $left = $p['content'];  
+        $leftPasteData = $p;
+        $leftIdent = $p['slug'] ?: $p['id'];
+        $leftLabel = $p['title'] ?: ('Paste ' . $leftIdent);
+        $leftLangFromDB = (string)$p['code']; 
+    } 
+}
+if ($rid) { 
+    $p = load_paste($pdo, $rid); 
+    if ($p) { 
+        $right = $p['content']; 
+        $rightPasteData = $p;
+        $rightIdent = $p['slug'] ?: $p['id'];
+        $rightLabel = $p['title'] ?: ('Paste ' . $rightIdent);
+        $rightLangFromDB = (string)$p['code']; 
+    } 
+}
 
 /* ---------- POST inputs (compare/swap; download keeps buffers) ---------- */
 if ($_SERVER['REQUEST_METHOD']==='POST') {

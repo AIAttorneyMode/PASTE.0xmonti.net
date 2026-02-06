@@ -1,6 +1,6 @@
 <?php
 /*
- * Paste $v3.3 2025/10/24 https://github.com/boxlabss/PASTE
+ * Paste $v3.4 2025/02/01 https://github.com/boxlabss/PASTE
  * demo: https://paste.boxlabs.uk/
  *
  * https://phpaste.sourceforge.io/
@@ -18,6 +18,10 @@
 
 date_default_timezone_set('UTC');
 
+// Increase timeout for large installations
+set_time_limit(300); // 5 minutes
+ini_set('max_execution_time', '300');
+
 // JSON response + clean buffers
 ob_start();
 header('Content-Type: application/json; charset=utf-8');
@@ -27,12 +31,16 @@ ini_set('display_errors', '0');
 ini_set('log_errors', '1');
 ini_set('html_errors', '0');
 
+// Log start
+error_log("install.php: Starting installation process");
+
 // warnings/notices and fatals during runtime will be wrapped below.
 register_shutdown_function(function () {
     $e = error_get_last();
     if ($e && in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
         while (ob_get_level()) { ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
+        error_log("install.php: Fatal error - " . $e['message'] . " in " . $e['file'] . ":" . $e['line']);
         echo json_encode([
             'status'  => 'error',
             'message' => 'Fatal error: ' . htmlspecialchars($e['message'], ENT_QUOTES, 'UTF-8') .
@@ -151,8 +159,10 @@ function tableExists(PDO $pdo, string $table): bool {
 }
 function getColumnDefinition(PDO $pdo, string $table, string $column): ?array {
     try {
-        $q = $pdo->prepare("SHOW COLUMNS FROM `$table` LIKE :c");
-        $q->execute([':c' => $column]);
+        // Use direct query with escaped values - LIKE with prepared statements can be problematic
+        $table = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+        $column = preg_replace('/[^a-zA-Z0-9_]/', '', $column);
+        $q = $pdo->query("SHOW COLUMNS FROM `$table` LIKE '$column'");
         $row = $q->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
     } catch (PDOException $e) { error_log("getColumnDefinition($table.$column): ".$e->getMessage()); return null; }
@@ -232,8 +242,31 @@ function ensureEngineAndCharset(PDO $pdo, string $table, array &$out, array &$er
 function ensureDateType(PDO $pdo, string $table, string $column, string $targetType, array &$out, array &$errs): void {
     $meta = getColumnDefinition($pdo, $table, $column);
     if (!$meta) return;
+    
+    // Check if column is already the target type
+    $currentType = strtoupper($meta['Type'] ?? '');
+    if (strpos($currentType, strtoupper($targetType)) === 0) {
+        // Already correct type, skip
+        return;
+    }
+    
     $tmp = $column . '_tmp_' . substr(md5($table.$column), 0, 6);
     try {
+        // Drop unique indexes that include this column to avoid duplicate errors during conversion
+        $db = $pdo->query('SELECT DATABASE()')->fetchColumn();
+        $idxQuery = $pdo->prepare("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS 
+            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? AND NON_UNIQUE = 0 AND INDEX_NAME != 'PRIMARY'");
+        $idxQuery->execute([$db, $table, $column]);
+        $indexes = $idxQuery->fetchAll(PDO::FETCH_COLUMN);
+        
+        foreach ($indexes as $idx) {
+            try {
+                $pdo->exec("ALTER TABLE `$table` DROP INDEX `$idx`");
+            } catch (PDOException $e) {
+                // Index might not exist, continue
+            }
+        }
+        
         $pdo->exec("ALTER TABLE `$table` ADD `$tmp` $targetType NULL DEFAULT NULL");
         if ($targetType === 'DATE') {
             $pdo->exec("UPDATE `$table` SET `$tmp` = CASE
@@ -372,10 +405,13 @@ function migrate_encrypted_pastes(PDO $pdo, string $oldKeyInput, string $newKeyH
 $output = [];
 $errors = [];
 
+error_log("install.php: Beginning database schema installation");
+
 try {
     $pdo->exec('SET FOREIGN_KEY_CHECKS=0');
 
     // admin
+    error_log("install.php: Processing admin table");
     if (!tableExists($pdo, 'admin')) {
         $pdo->exec("CREATE TABLE admin (
             id INT NOT NULL AUTO_INCREMENT,
@@ -502,15 +538,17 @@ try {
             id INT NOT NULL AUTO_INCREMENT,
             disableguest VARCHAR(10) NOT NULL DEFAULT 'off',
             siteprivate  VARCHAR(10) NOT NULL DEFAULT 'off',
+            hiderecentpastes VARCHAR(10) NOT NULL DEFAULT 'off',
             PRIMARY KEY(id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
-        $pdo->exec("INSERT INTO site_permissions (disableguest, siteprivate) VALUES ('off','off')");
+        $pdo->exec("INSERT INTO site_permissions (disableguest, siteprivate, hiderecentpastes) VALUES ('off','off','off')");
         $output[] = 'site_permissions table created & seeded.';
     } else {
         ensureEngineAndCharset($pdo,'site_permissions',$output,$errors);
-        ensureColumn($pdo,'site_permissions','id',           "INT NOT NULL AUTO_INCREMENT",$output,$errors);
-        ensureColumn($pdo,'site_permissions','disableguest', "VARCHAR(10) NOT NULL DEFAULT 'off'",$output,$errors);
-        ensureColumn($pdo,'site_permissions','siteprivate',  "VARCHAR(10) NOT NULL DEFAULT 'off'",$output,$errors);
+        ensureColumn($pdo,'site_permissions','id',             "INT NOT NULL AUTO_INCREMENT",$output,$errors);
+        ensureColumn($pdo,'site_permissions','disableguest',   "VARCHAR(10) NOT NULL DEFAULT 'off'",$output,$errors);
+        ensureColumn($pdo,'site_permissions','siteprivate',    "VARCHAR(10) NOT NULL DEFAULT 'off'",$output,$errors);
+        ensureColumn($pdo,'site_permissions','hiderecentpastes', "VARCHAR(10) NOT NULL DEFAULT 'off'",$output,$errors);
     }
 
     // interface
@@ -534,6 +572,8 @@ try {
     if (!tableExists($pdo,'pastes')) {
         $pdo->exec("CREATE TABLE pastes (
             id INT NOT NULL AUTO_INCREMENT,
+            slug VARCHAR(32) DEFAULT NULL,
+            parent_id INT DEFAULT NULL,
             title   VARCHAR(255) NOT NULL DEFAULT 'Untitled',
             content LONGTEXT NOT NULL,
             visible VARCHAR(10) NOT NULL DEFAULT '0',
@@ -546,12 +586,16 @@ try {
             ip   VARCHAR(45) NOT NULL,
             now_time VARCHAR(50) DEFAULT NULL,
             s_date   DATE DEFAULT NULL,
-            PRIMARY KEY(id)
+            PRIMARY KEY(id),
+            UNIQUE KEY idx_pastes_slug (slug),
+            KEY idx_pastes_parent (parent_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         $output[] = 'pastes table created.';
     } else {
         ensureEngineAndCharset($pdo,'pastes',$output,$errors);
         ensureColumn($pdo,'pastes','id',       "INT NOT NULL AUTO_INCREMENT",$output,$errors);
+        ensureColumn($pdo,'pastes','slug',     "VARCHAR(32) DEFAULT NULL",$output,$errors);
+        ensureColumn($pdo,'pastes','parent_id',"INT DEFAULT NULL",$output,$errors);
         ensureColumn($pdo,'pastes','title',    "VARCHAR(255) NOT NULL DEFAULT 'Untitled'",$output,$errors);
         ensureColumn($pdo,'pastes','content',  "LONGTEXT NOT NULL",$output,$errors);
         ensureColumn($pdo,'pastes','visible',  "VARCHAR(10) NOT NULL DEFAULT '0'",$output,$errors);
@@ -564,6 +608,14 @@ try {
         ensureColumn($pdo,'pastes','ip',       "VARCHAR(45) NOT NULL",$output,$errors);
         ensureColumn($pdo,'pastes','now_time', "VARCHAR(50)",$output,$errors);
         ensureDateType($pdo,'pastes','s_date','DATE',$output,$errors);
+        if (!indexExists($pdo,'pastes','idx_pastes_slug')) { 
+            try { $pdo->exec("ALTER TABLE pastes ADD UNIQUE KEY idx_pastes_slug (slug)"); $output[] = 'Added unique index on pastes.slug'; } 
+            catch (PDOException $e) { error_log($e->getMessage()); } 
+        }
+        if (!indexExists($pdo,'pastes','idx_pastes_parent')) { 
+            try { $pdo->exec("ALTER TABLE pastes ADD KEY idx_pastes_parent (parent_id)"); $output[] = 'Added index on pastes.parent_id'; } 
+            catch (PDOException $e) { error_log($e->getMessage()); } 
+        }
         if (getColumnDefinition($pdo,'pastes','views')) {
             $output[] = "Note: 'views' column exists (deprecated) — using paste_views table.";
         }
@@ -788,17 +840,19 @@ try {
             nav_parent INT DEFAULT NULL,
             sort_order INT NOT NULL DEFAULT 0,
             is_active TINYINT(1) NOT NULL DEFAULT 1,
+            external_url VARCHAR(500) DEFAULT NULL,
             PRIMARY KEY(id),
             KEY idx_pages_location (location),
             KEY idx_pages_navparent (nav_parent),
             KEY idx_pages_active (is_active),
             CONSTRAINT fk_pages_navparent FOREIGN KEY (nav_parent) REFERENCES pages(id) ON DELETE SET NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
-        $ins = $pdo->prepare("INSERT INTO pages (last_date, page_name, page_title, page_content, location, nav_parent, sort_order, is_active)
-                              VALUES (:d1,'contact','Contact',:c1,'footer',NULL,0,1),
-                                     (:d2,'terms','Terms of Service',:c2,'footer',NULL,1,1)");
+        $ins = $pdo->prepare("INSERT INTO pages (last_date, page_name, page_title, page_content, location, nav_parent, sort_order, is_active, external_url)
+                              VALUES (:d1,'contact','Contact',:c1,'footer',NULL,0,1,NULL),
+                                     (:d2,'terms','Terms of Service',:c2,'footer',NULL,1,1,NULL),
+                                     (:d3,'api','API Documentation',NULL,'footer',NULL,2,1,'api-docs.php')");
         $ins->execute([
-            ':d1'=>$date, ':d2'=>$date,
+            ':d1'=>$date, ':d2'=>$date, ':d3'=>$date,
             ':c1'=>'<h1>Contact Us</h1><p>Email: <a href="mailto:admin@example.com">admin@example.com</a></p>',
             ':c2'=>'<h1>Terms of Service</h1><p>Replace this with your actual terms.</p>'
         ]);
@@ -814,6 +868,7 @@ try {
         ensureColumn($pdo,'pages','nav_parent',   "INT DEFAULT NULL",$output,$errors);
         ensureColumn($pdo,'pages','sort_order',   "INT NOT NULL DEFAULT 0",$output,$errors);
         ensureColumn($pdo,'pages','is_active',    "TINYINT(1) NOT NULL DEFAULT 1",$output,$errors);
+        ensureColumn($pdo,'pages','external_url', "VARCHAR(500) DEFAULT NULL",$output,$errors);
         if (!indexExists($pdo,'pages','idx_pages_location')) { try { $pdo->exec("ALTER TABLE pages ADD KEY idx_pages_location (location)"); } catch (PDOException $e) { error_log($e->getMessage()); } }
         if (!indexExists($pdo,'pages','idx_pages_navparent')) { try { $pdo->exec("ALTER TABLE pages ADD KEY idx_pages_navparent (nav_parent)"); } catch (PDOException $e) { error_log($e->getMessage()); } }
         if (!indexExists($pdo,'pages','idx_pages_active')) { try { $pdo->exec("ALTER TABLE pages ADD KEY idx_pages_active (is_active)"); } catch (PDOException $e) { error_log($e->getMessage()); } }
@@ -924,7 +979,174 @@ try {
         ensureColumn($pdo,'captcha','turnstile_secretkey',"TEXT",$output,$errors);
     }
 
+    // paste_options (for slug URL settings and other paste-related options)
+    if (!tableExists($pdo,'paste_options')) {
+        $pdo->exec("CREATE TABLE paste_options (
+            id INT NOT NULL AUTO_INCREMENT,
+            option_name VARCHAR(100) NOT NULL,
+            option_value TEXT,
+            PRIMARY KEY(id),
+            UNIQUE KEY idx_option_name (option_name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        // Insert default settings for slug URLs
+        $pdo->exec("INSERT INTO paste_options (option_name, option_value) VALUES 
+            ('url_mode', 'slug'),
+            ('slug_length', '8')");
+        $output[] = 'paste_options table created & seeded with default slug settings.';
+    } else {
+        ensureEngineAndCharset($pdo,'paste_options',$output,$errors);
+        ensureColumn($pdo,'paste_options','id',           "INT NOT NULL AUTO_INCREMENT",$output,$errors);
+        ensureColumn($pdo,'paste_options','option_name',  "VARCHAR(100) NOT NULL",$output,$errors);
+        ensureColumn($pdo,'paste_options','option_value', "TEXT",$output,$errors);
+        if (!indexExists($pdo,'paste_options','idx_option_name')) { 
+            try { $pdo->exec("ALTER TABLE paste_options ADD UNIQUE KEY idx_option_name (option_name)"); } 
+            catch (PDOException $e) { error_log($e->getMessage()); } 
+        }
+        // Ensure default options exist
+        $check = $pdo->prepare("SELECT COUNT(*) FROM paste_options WHERE option_name = ?");
+        $check->execute(['url_mode']);
+        if ((int)$check->fetchColumn() === 0) {
+            $pdo->exec("INSERT INTO paste_options (option_name, option_value) VALUES ('url_mode', 'slug')");
+            $output[] = 'Added default url_mode option.';
+        }
+        $check->execute(['slug_length']);
+        if ((int)$check->fetchColumn() === 0) {
+            $pdo->exec("INSERT INTO paste_options (option_name, option_value) VALUES ('slug_length', '8')");
+            $output[] = 'Added default slug_length option.';
+        }
+    }
+
+    // api_keys (user API keys for paste submission)
+    if (!tableExists($pdo,'api_keys')) {
+        $pdo->exec("CREATE TABLE api_keys (
+            id INT NOT NULL AUTO_INCREMENT,
+            user_id INT NOT NULL,
+            api_key VARCHAR(64) NOT NULL,
+            name VARCHAR(100) DEFAULT 'Default',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_used_at DATETIME DEFAULT NULL,
+            is_active TINYINT(1) DEFAULT 1,
+            PRIMARY KEY(id),
+            UNIQUE KEY idx_api_key (api_key),
+            KEY idx_user_id (user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        $output[] = 'api_keys table created.';
+        
+        // Add API settings to paste_options
+        $pdo->exec("INSERT IGNORE INTO paste_options (option_name, option_value) VALUES 
+            ('api_enabled', '1'),
+            ('api_keys_per_user', '5')");
+        $output[] = 'API settings added.';
+    } else {
+        ensureEngineAndCharset($pdo,'api_keys',$output,$errors);
+        ensureColumn($pdo,'api_keys','id',          "INT NOT NULL AUTO_INCREMENT",$output,$errors);
+        ensureColumn($pdo,'api_keys','user_id',     "INT NOT NULL",$output,$errors);
+        ensureColumn($pdo,'api_keys','api_key',     "VARCHAR(64) NOT NULL",$output,$errors);
+        ensureColumn($pdo,'api_keys','name',        "VARCHAR(100) DEFAULT 'Default'",$output,$errors);
+        ensureColumn($pdo,'api_keys','created_at',  "DATETIME DEFAULT CURRENT_TIMESTAMP",$output,$errors);
+        ensureColumn($pdo,'api_keys','last_used_at',"DATETIME DEFAULT NULL",$output,$errors);
+        ensureColumn($pdo,'api_keys','is_active',   "TINYINT(1) DEFAULT 1",$output,$errors);
+    }
+
     $pdo->exec('SET FOREIGN_KEY_CHECKS=1');
+
+    // ---- Generate slugs for existing pastes that don't have them ----
+    $generateSlugs = isset($_POST['generate_slugs']) && $_POST['generate_slugs'] === 'on';
+    
+    if ($generateSlugs) {
+        try {
+            // Check if there are pastes without slugs
+            $stmt = $pdo->query("SELECT COUNT(*) FROM pastes WHERE slug IS NULL OR slug = ''");
+            $pastesWithoutSlugs = (int)$stmt->fetchColumn();
+            
+            $stmt = $pdo->query("SELECT COUNT(*) FROM pastes");
+            $totalPastes = (int)$stmt->fetchColumn();
+            
+            if ($pastesWithoutSlugs > 0) {
+                $output[] = "Found $pastesWithoutSlugs pastes without slugs (out of $totalPastes total). Generating slugs...";
+                
+                // Get slug length from paste_options
+                $slugLength = 8;
+                try {
+                    $stmt = $pdo->query("SELECT option_value FROM paste_options WHERE option_name = 'slug_length'");
+                    $row = $stmt->fetch();
+                    if ($row && is_numeric($row['option_value'])) {
+                        $slugLength = max(4, min(32, (int)$row['option_value']));
+                    }
+                } catch (PDOException $e) {
+                    // Use default
+                }
+                
+                // Charset for slugs (excludes ambiguous characters)
+                $charset = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+                $charsetLen = strlen($charset);
+                
+                // Generate slugs in batches
+                $batchSize = 100;
+                $updated = 0;
+                $collisions = 0;
+                
+                do {
+                    $stmt = $pdo->query("SELECT id FROM pastes WHERE slug IS NULL OR slug = '' LIMIT $batchSize");
+                    $pastes = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                    
+                    foreach ($pastes as $pasteId) {
+                        $attempts = 0;
+                        $maxAttempts = 10;
+                        $currentLength = $slugLength;
+                        
+                        do {
+                            // Generate random slug
+                            $slug = '';
+                            for ($i = 0; $i < $currentLength; $i++) {
+                                $slug .= $charset[random_int(0, $charsetLen - 1)];
+                            }
+                            
+                            // Check for collision
+                            $checkStmt = $pdo->prepare("SELECT COUNT(*) FROM pastes WHERE slug = ?");
+                            $checkStmt->execute([$slug]);
+                            $exists = (int)$checkStmt->fetchColumn() > 0;
+                            
+                            if (!$exists) {
+                                // Update the paste with the new slug
+                                $updateStmt = $pdo->prepare("UPDATE pastes SET slug = ? WHERE id = ?");
+                                $updateStmt->execute([$slug, $pasteId]);
+                                $updated++;
+                                break;
+                            }
+                            
+                            $attempts++;
+                            $collisions++;
+                            
+                            // Increase length on collision
+                            if ($attempts >= $maxAttempts / 2) {
+                                $currentLength++;
+                            }
+                        } while ($attempts < $maxAttempts);
+                    }
+                } while (count($pastes) === $batchSize);
+                
+                $output[] = "Generated slugs for $updated pastes" . ($collisions > 0 ? " ($collisions collisions resolved)" : "") . ".";
+                
+                // Regenerate sitemap with new slug URLs
+                require_once(__DIR__ . '/../includes/functions.php');
+                $sitemapResult = regenerateSitemap($pdo);
+                if ($sitemapResult['success']) {
+                    $output[] = "Sitemap regenerated with {$sitemapResult['count']} URLs.";
+                } else {
+                    $output[] = "Sitemap regeneration skipped: " . ($sitemapResult['message'] ?? 'unknown error');
+                }
+            } else {
+                $output[] = "All $totalPastes pastes already have slugs - no generation needed.";
+            }
+        } catch (PDOException $e) {
+            error_log("install.php: Slug generation error: " . $e->getMessage());
+            $errors[] = 'Slug generation warning: ' . $e->getMessage();
+        }
+    } else {
+        $output[] = 'Slug generation skipped (option not selected).';
+    }
 
     // ---- optional re-key legacy encrypted pastes ----
     if ($old_sec_key_in !== '') {
@@ -941,6 +1163,7 @@ try {
     }
 
     // ---- finish ----
+    error_log("install.php: Installation completed successfully");
     $post = 'Installation and schema update completed successfully.<br>';
     if ($needsOAuth) {
         if (!empty($enablegoog) && $enablegoog === 'yes') {
@@ -962,6 +1185,7 @@ try {
     echo json_encode(['status' => 'success', 'message' => implode('<br>', $output) . '<br>' . $post]);
 
 } catch (Throwable $e) {
+    error_log("install.php: Error - " . $e->getMessage());
     while (ob_get_level()) { ob_end_clean(); }
     echo json_encode(['status' => 'error', 'message' => 'Unexpected error: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8')]);
 } finally {

@@ -138,19 +138,45 @@ try {
         // Stream in chunks
         $limit   = 500;
         $written = 1; // homepage
+        
+        // Check if slug column exists
+        $has_slug = false;
+        try {
+            $chk = $pdo->query("SHOW COLUMNS FROM pastes LIKE 'slug'");
+            $has_slug = ($chk && $chk->rowCount() > 0);
+        } catch (Exception $e) { /* ignore */ }
+        
+        // Check URL mode preference
+        $url_mode = 'slug'; // default
+        try {
+            $modeStmt = $pdo->query("SELECT option_value FROM paste_options WHERE option_name = 'url_mode'");
+            $modeRow = $modeStmt->fetch();
+            if ($modeRow && in_array($modeRow['option_value'], ['slug', 'numeric'], true)) {
+                $url_mode = $modeRow['option_value'];
+            }
+        } catch (Exception $e) { /* ignore - use default */ }
+        
+        // Only use slugs if URL mode is 'slug' and slug column exists
+        $use_slugs = ($has_slug && $url_mode === 'slug');
+        
+        $select_cols = $use_slugs ? "id, slug" : "id";
+        
         for ($offset=0; $offset < $total_public; $offset += $limit) {
-            $st = $pdo->prepare("SELECT id FROM pastes WHERE visible='0' ORDER BY id DESC LIMIT :lim OFFSET :off");
+            $st = $pdo->prepare("SELECT {$select_cols} FROM pastes WHERE visible='0' ORDER BY id DESC LIMIT :lim OFFSET :off");
             $st->bindValue(':lim', $limit, PDO::PARAM_INT);
             $st->bindValue(':off', $offset, PDO::PARAM_INT);
             $st->execute();
             $rows = $st->fetchAll();
 
             foreach ($rows as $r) {
-                $id = (int)$r['id'];
+                // Use slug if available and URL mode is 'slug', otherwise use numeric ID
+                $url_id = ($use_slugs && isset($r['slug']) && $r['slug'] !== '') 
+                    ? $r['slug'] 
+                    : (string)$r['id'];
                 if ((string)$mod_rewrite === "1") {
-                    $url = $baseurl . '/' . rawurlencode((string)$id);
+                    $url = $baseurl . '/' . rawurlencode($url_id);
                 } else {
-                    $url = $baseurl . '/paste.php?id=' . urlencode((string)$id);
+                    $url = $baseurl . '/paste.php?id=' . urlencode($url_id);
                 }
                 $loc = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
                 fwrite($fh, "  <url>\n");
@@ -369,10 +395,16 @@ document.addEventListener('DOMContentLoaded', function () {
           <div class="d-flex flex-wrap gap-2">
             <div class="stat-chip"><i class="bi bi-globe2"></i> <span>Base URL:</span> <strong><?php echo htmlspecialchars($baseurl); ?></strong></div>
             <div class="stat-chip"><i class="bi bi-sliders"></i> <span>Rewrite:</span> <strong><?php echo ((string)$mod_rewrite==="1"?'On':'Off'); ?></strong></div>
+            <div class="stat-chip"><i class="bi bi-link-45deg"></i> <span>URL Mode:</span> <strong><?php echo htmlspecialchars($url_mode ?? 'slug'); ?></strong></div>
             <?php if ($written_count !== null): ?>
               <div class="stat-chip"><i class="bi bi-list-check"></i> <span>URLs written:</span> <strong><?php echo number_format($written_count); ?></strong></div>
             <?php endif; ?>
           </div>
+          <?php if (($url_mode ?? 'slug') === 'slug'): ?>
+          <div class="alert alert-info mt-3 mb-0">
+            <i class="bi bi-info-circle"></i> URL mode is set to <strong>slug</strong>. Sitemap will use slug URLs for pastes that have them.
+          </div>
+          <?php endif; ?>
         </div>
       </div>
 

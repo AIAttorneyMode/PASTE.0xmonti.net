@@ -1,6 +1,6 @@
 <?php
 /*
- * Paste $v3.3 2025/10/24 https://github.com/boxlabss/PASTE
+ * Paste $v3.4 2026/02/04 https://github.com/boxlabss/PASTE
  * demo: https://paste.boxlabs.uk/
  *
  * https://phpaste.sourceforge.io/
@@ -79,9 +79,11 @@ $srcMap = [
 $srcLabel = $srcMap[$p_code_source ?? ''] ?? null;
 
 // Common URLs for comment actions + login return
+// Use slug if available, otherwise fall back to numeric ID
+$paste_url_ident = (isset($url_identifier) && $url_identifier !== '') ? $url_identifier : (isset($p_slug) && $p_slug !== '' ? $p_slug : ($paste_id ?? 0));
 $basePasteUrl = ($mod_rewrite == '1')
-    ? rtrim($baseurl ?? '/', '/') . '/' . (int)($paste_id ?? 0)
-    : rtrim($baseurl ?? '/', '/') . '/paste.php?id=' . (int)($paste_id ?? 0);
+    ? rtrim($baseurl ?? '/', '/') . '/' . rawurlencode((string)$paste_url_ident)
+    : rtrim($baseurl ?? '/', '/') . '/paste.php?id=' . rawurlencode((string)$paste_url_ident);
 
 $commentsActionUrl = $basePasteUrl . '#comments';
 
@@ -92,14 +94,18 @@ $loginNext = function(string $frag = '#comments') use ($basePasteUrl, $baseurl) 
 // Quick diff: current paste
 $diffQuickUrl = null; //if no pastes yet
 if (!empty($paste_id)) {
-  $diffQuickUrl = rtrim($baseurl ?? '/', '/') . '/diff.php?a=' . (int)$paste_id . '&b=' . (int)$paste_id;
+  $diff_ident = (isset($url_identifier) && $url_identifier !== '') ? $url_identifier : (isset($p_slug) && $p_slug !== '' ? $p_slug : $paste_id);
+  $diffQuickUrl = rtrim($baseurl ?? '/', '/') . '/diff.php?a=' . urlencode((string)$diff_ident) . '&b=' . urlencode((string)$diff_ident);
 }
 
 $diffUrl = null;
-// Diff URL (if this paste is a fork of another - future idea)
-//$diffUrl = (isset($paste_parent_id, $paste_id) && (int)$parent_id > 0 && (int)$paste_id > 0)
-//  ? rtrim($baseurl ?? '/', '/') . '/diff.php?a=' . (int)$parent_id . '&b=' . (int)$paste_id
-//  : null;
+// Diff URL (if this paste is a fork of another)
+if (isset($p_parent_id) && $p_parent_id > 0 && isset($paste_id) && (int)$paste_id > 0) {
+    // Use slug identifiers if available for URLs
+    $parent_ident = isset($parent_paste['slug']) && $parent_paste['slug'] ? $parent_paste['slug'] : $p_parent_id;
+    $current_ident = isset($p_slug) && $p_slug ? $p_slug : $paste_id;
+    $diffUrl = rtrim($baseurl ?? '/', '/') . '/diff.php?a=' . urlencode((string)$parent_ident) . '&b=' . urlencode((string)$current_ident);
+}
 
 // Convenience: detect if comments are globally disabled (from paste.php logic)
 $show_comments_ui = isset($show_comments) ? (bool)$show_comments : true;
@@ -355,6 +361,17 @@ if (!function_exists('render_comment_node')) {
                 <span><i class="bi bi-eye me-1"></i><?php echo htmlspecialchars((string) ($p_views ?? 0)); ?> <?php echo htmlspecialchars($lang['views'] ?? 'Views'); ?></span>
                 <span>Size: <?php echo htmlspecialchars($paste_size); ?></span>
                 <span>Posted on: <?php echo htmlspecialchars($p_date ? date('M j, y @ g:i A', strtotime($p_date)) : date('M j, Y, g:i A')); ?></span>
+                <?php if (isset($parent_paste) && $parent_paste): ?>
+                  <span class="text-info">
+                    <i class="bi bi-diagram-2 me-1"></i>Forked from: 
+                    <a href="<?php echo htmlspecialchars($parent_url, ENT_QUOTES, 'UTF-8'); ?>" class="text-info">
+                      <?php echo htmlspecialchars($parent_paste['title'] ?: 'Untitled', ENT_QUOTES, 'UTF-8'); ?>
+                    </a>
+                    <a href="<?php echo htmlspecialchars($diffUrl, ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-sm btn-outline-info ms-2" title="View differences">
+                      <i class="bi bi-arrow-left-right"></i> Diff
+                    </a>
+                  </span>
+                <?php endif; ?>
               </div>
             </div>
 
@@ -387,16 +404,17 @@ if (!function_exists('render_comment_node')) {
                 <i class="bi bi-clipboard"></i>
               </button>
               <?php
-                $embed_url  = getEmbedUrl($paste_id ?? '', $mod_rewrite ?? false, $baseurl ?? '');
-                $embed_code = $paste_id ? '<iframe src="' . htmlspecialchars($embed_url, ENT_QUOTES, 'UTF-8') . '" width="100%" height="400px" frameborder="0" allowfullscreen></iframe>' : '';
+                $embed_identifier = $url_identifier ?? $paste_id ?? '';
+                $embed_url  = getEmbedUrl($embed_identifier, $mod_rewrite ?? false, $baseurl ?? '');
+                $embed_code = $embed_identifier ? '<iframe src="' . htmlspecialchars($embed_url, ENT_QUOTES, 'UTF-8') . '" width="100%" height="400px" frameborder="0" allowfullscreen></iframe>' : '';
               ?>
               <button type="button" class="btn btn-outline-secondary embed-tool" title="Embed Paste" onclick="showEmbedCode('<?php echo addslashes(htmlspecialchars($embed_code, ENT_QUOTES, 'UTF-8')); ?>')">
                 <i class="bi bi-code-square"></i>
               </button>
-              <a href="<?php echo htmlspecialchars($p_raw ?? ($baseurl . '/raw.php?id=' . ($paste_id ?? ''))); ?>" class="btn btn-outline-secondary" title="Raw Paste">
+              <a href="<?php echo htmlspecialchars($p_raw ?? ($baseurl . '/raw.php?id=' . ($url_identifier ?? $paste_id ?? ''))); ?>" class="btn btn-outline-secondary" title="Raw Paste">
                 <i class="bi bi-file-text"></i>
               </a>
-              <a href="<?php echo htmlspecialchars($p_download ?? ($baseurl . '/download.php?id=' . ($paste_id ?? ''))); ?>" class="btn btn-outline-secondary" title="Download">
+              <a href="<?php echo htmlspecialchars($p_download ?? ($baseurl . '/download.php?id=' . ($url_identifier ?? $paste_id ?? ''))); ?>" class="btn btn-outline-secondary" title="Download">
                 <i class="bi bi-file-arrow-down"></i>
               </a>
 
@@ -446,21 +464,22 @@ if (!function_exists('render_comment_node')) {
 
             <!-- Raw paste (lazy load; JS wraps textarea later) -->
             <div class="mb-3 position-relative" id="raw-block"
-                 data-raw-url="<?php echo htmlspecialchars($p_raw ?? ($baseurl . '/raw.php?id=' . ($paste_id ?? ''))); ?>">
+                 data-raw-url="<?php echo htmlspecialchars($p_raw ?? ($baseurl . '/raw.php?id=' . ($url_identifier ?? $paste_id ?? ''))); ?>">
               <p><?php echo htmlspecialchars($lang['rawpaste'] ?? 'Raw Paste'); ?></p>
             <button type="button" id="load-raw" class="btn btn-outline-secondary btn-sm"><?php echo htmlspecialchars($lang['loadraw'] ?? 'Load Raw', ENT_QUOTES, 'UTF-8'); ?></button>
               <textarea class="form-control d-none" rows="15" id="code" readonly></textarea>
               <div id="line-number-tooltip" class="line-number-tooltip"></div>
             </div>
 
-            <!-- Fork/Edit buttons for guests -->
+            <!-- Fork/Edit buttons -->
             <div class="btn-group" role="group" aria-label="Fork and Edit actions">
               <?php if (!isset($_SESSION['username']) && (!isset($privatesite) || $privatesite != "on")): ?>
+                <!-- Guests - show login prompts for fork and edit -->
                 <a href="#" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#signin" title="Login or Register to fork this paste">
                   <i class="bi bi-git"></i> <?php echo htmlspecialchars($lang['forkpaste'] ?? 'Fork', ENT_QUOTES, 'UTF-8'); ?>
                 </a>
                 <a href="#" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#signin" title="Login or Register to edit this paste">
-                  <i class="bi bi-git"></i> <?php echo htmlspecialchars($lang['editpaste'] ?? 'Edit', ENT_QUOTES, 'UTF-8'); ?>
+                  <i class="bi bi-pencil"></i> <?php echo htmlspecialchars($lang['editpaste'] ?? 'Edit', ENT_QUOTES, 'UTF-8'); ?>
                 </a>
               <?php endif; ?>
 
@@ -594,15 +613,15 @@ if (!function_exists('render_comment_node')) {
                         </div>
                       </div>
 
-                      <div class="d-grid gap-2">
-                        <input type="hidden" name="paste_id" value="<?php echo htmlspecialchars($paste_id ?? ''); ?>" />
+                      <div class="d-flex flex-wrap gap-2">
+                        <input type="hidden" name="paste_id" value="<?php echo htmlspecialchars($url_identifier ?? $paste_id ?? '', ENT_QUOTES, 'UTF-8'); ?>" />
+                        <input type="hidden" name="fork_from" value="<?php echo htmlspecialchars((string)($paste_id ?? ''), ENT_QUOTES, 'UTF-8'); ?>" />
                         <?php if (isset($_SESSION['username']) && $_SESSION['username'] == ($p_member ?? 'Guest')): ?>
-                          <input class="btn btn-primary paste-button" type="submit" name="edit" id="edit" value="<?php echo htmlspecialchars($lang['editpaste'] ?? 'Edit Paste'); ?>" />
+                          <input class="btn btn-primary paste-button" type="submit" name="edit" id="edit" value="<?php echo htmlspecialchars($lang['editpaste'] ?? 'Edit Paste', ENT_QUOTES, 'UTF-8'); ?>" />
                         <?php endif; ?>
-                        <input class="btn btn-primary paste-button" type="submit" name="submit" id="submit" value="<?php echo htmlspecialchars($lang['forkpaste'] ?? 'Fork Paste'); ?>" />
+                        <input class="btn btn-outline-primary paste-button" type="submit" name="fork" id="fork" value="<?php echo htmlspecialchars($lang['forkpaste'] ?? 'Fork Paste', ENT_QUOTES, 'UTF-8'); ?>" />
 
                         <?php if ($diffUrl): ?>
-                          <!-- Diff link styled like a button -->
                           <a class="btn btn-outline-secondary paste-button"
                              href="<?php echo htmlspecialchars($diffUrl, ENT_QUOTES, 'UTF-8'); ?>"
                              title="View differences from parent">
@@ -674,6 +693,43 @@ if (!function_exists('render_comment_node')) {
           </div>
           <?php endif; ?>
       </div>
+
+        <!-- ===== Forks (if any) ===== -->
+        <?php if (!empty($child_pastes)): ?>
+        <div class="mt-4" id="forks">
+          <div class="card border-0 shadow-sm">
+            <div class="card-header bg-dark text-light d-flex align-items-center">
+              <i class="bi bi-diagram-3 me-2"></i>
+              <span class="fw-semibold">Forks</span>
+              <span class="badge bg-secondary ms-2"><?php echo count($child_pastes); ?></span>
+            </div>
+            <div class="card-body p-0">
+              <ul class="list-group list-group-flush">
+                <?php foreach ($child_pastes as $fork): 
+                  $fork_ident = !empty($fork['slug']) ? $fork['slug'] : $fork['id'];
+                  $fork_url = ($mod_rewrite == '1') ? $baseurl . $fork_ident : $baseurl . 'paste.php?id=' . $fork_ident;
+                  $diff_url = rtrim($baseurl, '/') . '/diff.php?a=' . urlencode((string)$url_identifier) . '&b=' . urlencode((string)$fork_ident);
+                ?>
+                  <li class="list-group-item bg-dark d-flex justify-content-between align-items-center">
+                    <div>
+                      <a href="<?php echo htmlspecialchars($fork_url, ENT_QUOTES, 'UTF-8'); ?>" class="text-light text-decoration-none">
+                        <?php echo htmlspecialchars($fork['title'] ?: 'Untitled', ENT_QUOTES, 'UTF-8'); ?>
+                      </a>
+                      <small class="text-muted ms-2">
+                        by <?php echo htmlspecialchars($fork['member'] ?: 'Guest', ENT_QUOTES, 'UTF-8'); ?>
+                        · <?php echo htmlspecialchars(date('M j, Y', strtotime($fork['date'])), ENT_QUOTES, 'UTF-8'); ?>
+                      </small>
+                    </div>
+                    <a href="<?php echo htmlspecialchars($diff_url, ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-sm btn-outline-info" title="View differences">
+                      <i class="bi bi-arrow-left-right"></i>
+                    </a>
+                  </li>
+                <?php endforeach; ?>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <?php endif; ?>
 
         <!-- ===== Comments (Private) ===== -->
         <?php if ($show_comments_ui): ?>
@@ -925,16 +981,17 @@ if (!function_exists('render_comment_node')) {
               <i class="bi bi-clipboard"></i>
             </button>
             <?php
-              $embed_url  = getEmbedUrl($paste_id ?? '', $mod_rewrite ?? false, $baseurl ?? '');
-              $embed_code = $paste_id ? '<iframe src="' . htmlspecialchars($embed_url, ENT_QUOTES, 'UTF-8') . '" width="100%" height="400px" frameborder="0" allowfullscreen></iframe>' : '';
+              $embed_identifier = $url_identifier ?? $paste_id ?? '';
+              $embed_url  = getEmbedUrl($embed_identifier, $mod_rewrite ?? false, $baseurl ?? '');
+              $embed_code = $embed_identifier ? '<iframe src="' . htmlspecialchars($embed_url, ENT_QUOTES, 'UTF-8') . '" width="100%" height="400px" frameborder="0" allowfullscreen></iframe>' : '';
             ?>
             <button type="button" class="btn btn-outline-secondary embed-tool" title="Embed Paste" onclick="showEmbedCode('<?php echo addslashes(htmlspecialchars($embed_code, ENT_QUOTES, 'UTF-8')); ?>')">
               <i class="bi bi-code-square"></i>
             </button>
-            <a href="<?php echo htmlspecialchars($p_raw ?? ($baseurl . '/raw.php?id=' . ($paste_id ?? ''))); ?>" class="btn btn-outline-secondary" title="Raw Paste">
+            <a href="<?php echo htmlspecialchars($p_raw ?? ($baseurl . '/raw.php?id=' . ($url_identifier ?? $paste_id ?? ''))); ?>" class="btn btn-outline-secondary" title="Raw Paste">
               <i class="bi bi-file-text"></i>
             </a>
-            <a href="<?php echo htmlspecialchars($p_download ?? ($baseurl . '/download.php?id=' . ($paste_id ?? ''))); ?>" class="btn btn-outline-secondary" title="Download">
+            <a href="<?php echo htmlspecialchars($p_download ?? ($baseurl . '/download.php?id=' . ($url_identifier ?? $paste_id ?? ''))); ?>" class="btn btn-outline-secondary" title="Download">
               <i class="bi bi-file-arrow-down"></i>
             </a>
 
@@ -989,7 +1046,7 @@ if (!function_exists('render_comment_node')) {
           <?php endif; ?>
           <!-- Raw paste (lazy load; textarea prefilled as fallback) -->
           <div class="mb-3 position-relative" id="raw-block"
-               data-raw-url="<?php echo htmlspecialchars($p_raw ?? ($baseurl . '/raw.php?id=' . ($paste_id ?? ''))); ?>">
+               data-raw-url="<?php echo htmlspecialchars($p_raw ?? ($baseurl . '/raw.php?id=' . ($url_identifier ?? $paste_id ?? ''))); ?>">
             <p><?php echo htmlspecialchars($lang['rawpaste'] ?? 'Raw Paste'); ?></p>
             <button type="button" id="load-raw" class="btn btn-outline-secondary btn-sm"><?php echo htmlspecialchars($lang['loadraw'] ?? 'Load Raw', ENT_QUOTES, 'UTF-8'); ?></button>
             <textarea class="form-control d-none" rows="15" id="code" readonly><?php
@@ -998,27 +1055,27 @@ if (!function_exists('render_comment_node')) {
             <div id="line-number-tooltip" class="line-number-tooltip"></div>
           </div>
 
-          <?php if (($disableguest ?? '') != "on" || isset($_SESSION['username'])): ?>
-            <div class="btn-group" role="group" aria-label="Fork and Edit actions">
-              <?php if (!isset($_SESSION['username']) && (!isset($privatesite) || $privatesite != "on")): ?>
-                <a href="#" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#signin" title="Login or Register to fork this paste">
-                  <i class="bi bi-git"></i> <?php echo htmlspecialchars($lang['forkpaste'] ?? 'Fork', ENT_QUOTES, 'UTF-8'); ?>
-                </a>
-                <a href="#" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#signin" title="Login or Register to edit this paste">
-                  <i class="bi bi-pencil"></i> <?php echo htmlspecialchars($lang['editpaste'] ?? 'Edit', ENT_QUOTES, 'UTF-8'); ?>
-                </a>
-              <?php endif; ?>
+          <!-- Fork/Edit buttons -->
+          <div class="btn-group" role="group" aria-label="Fork and Edit actions">
+            <?php if (!isset($_SESSION['username']) && (!isset($privatesite) || $privatesite != "on")): ?>
+              <!-- Guests - show login prompts for fork and edit -->
+              <a href="#" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#signin" title="Login or Register to fork this paste">
+                <i class="bi bi-git"></i> <?php echo htmlspecialchars($lang['forkpaste'] ?? 'Fork', ENT_QUOTES, 'UTF-8'); ?>
+              </a>
+              <a href="#" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#signin" title="Login or Register to edit this paste">
+                <i class="bi bi-pencil"></i> <?php echo htmlspecialchars($lang['editpaste'] ?? 'Edit', ENT_QUOTES, 'UTF-8'); ?>
+              </a>
+            <?php endif; ?>
 
-              <?php if ($diffUrl): ?>
-                <!-- Big Diff button (guests & logged-in) -->
-                <a class="btn btn-outline-secondary"
-                   href="<?php echo htmlspecialchars($diffUrl, ENT_QUOTES, 'UTF-8'); ?>"
-                   title="View differences from parent">
-                  <i class="bi bi-arrow-left-right"></i> <?php echo htmlspecialchars($lang['viewdifferences'] ?? 'View differences', ENT_QUOTES, 'UTF-8'); ?>
-                </a>
-              <?php endif; ?>
-            </div>
-          <?php endif; ?>
+            <?php if ($diffUrl): ?>
+              <!-- Big Diff button (guests & logged-in) -->
+              <a class="btn btn-outline-secondary"
+                 href="<?php echo htmlspecialchars($diffUrl, ENT_QUOTES, 'UTF-8'); ?>"
+                 title="View differences from parent">
+                <i class="bi bi-arrow-left-right"></i> <?php echo htmlspecialchars($lang['viewdifferences'] ?? 'View differences', ENT_QUOTES, 'UTF-8'); ?>
+              </a>
+            <?php endif; ?>
+          </div>
 
           <?php if (isset($_SESSION['username'])): ?>
             <!-- Paste Edit/Fork Form -->
@@ -1151,15 +1208,15 @@ if (!function_exists('render_comment_node')) {
                       </div>
                     </div>
 
-                    <div class="d-grid gap-2">
-                      <input type="hidden" name="paste_id" value="<?php echo htmlspecialchars($paste_id ?? ''); ?>" />
+                    <div class="d-flex flex-wrap gap-2">
+                      <input type="hidden" name="paste_id" value="<?php echo htmlspecialchars($url_identifier ?? $paste_id ?? '', ENT_QUOTES, 'UTF-8'); ?>" />
+                      <input type="hidden" name="fork_from" value="<?php echo htmlspecialchars((string)($paste_id ?? ''), ENT_QUOTES, 'UTF-8'); ?>" />
                       <?php if (isset($_SESSION['username']) && $_SESSION['username'] == ($p_member ?? 'Guest')): ?>
-                        <input class="btn btn-primary paste-button" type="submit" name="edit" id="edit" value="<?php echo htmlspecialchars($lang['editpaste'] ?? 'Edit Paste'); ?>" />
+                        <input class="btn btn-primary paste-button" type="submit" name="edit" id="edit" value="<?php echo htmlspecialchars($lang['editpaste'] ?? 'Edit Paste', ENT_QUOTES, 'UTF-8'); ?>" />
                       <?php endif; ?>
-                      <input class="btn btn-primary paste-button" type="submit" name="submit" id="submit" value="<?php echo htmlspecialchars($lang['forkpaste'] ?? 'Fork Paste'); ?>" />
+                      <input class="btn btn-outline-primary paste-button" type="submit" name="fork" id="fork" value="<?php echo htmlspecialchars($lang['forkpaste'] ?? 'Fork Paste', ENT_QUOTES, 'UTF-8'); ?>" />
 
                       <?php if ($diffUrl): ?>
-                        <!-- Diff link styled like a button -->
                         <a class="btn btn-outline-secondary paste-button"
                            href="<?php echo htmlspecialchars($diffUrl, ENT_QUOTES, 'UTF-8'); ?>"
                            title="View differences from parent">
@@ -1231,6 +1288,43 @@ if (!function_exists('render_comment_node')) {
         </div>
         <?php endif; ?>
       </div>
+
+      <!-- ===== Forks (if any) - Public Layout ===== -->
+      <?php if (!empty($child_pastes)): ?>
+      <div class="mt-4" id="forks">
+        <div class="card border-0 shadow-sm">
+          <div class="card-header bg-dark text-light d-flex align-items-center">
+            <i class="bi bi-diagram-3 me-2"></i>
+            <span class="fw-semibold">Forks</span>
+            <span class="badge bg-secondary ms-2"><?php echo count($child_pastes); ?></span>
+          </div>
+          <div class="card-body p-0">
+            <ul class="list-group list-group-flush">
+              <?php foreach ($child_pastes as $fork): 
+                $fork_ident = !empty($fork['slug']) ? $fork['slug'] : $fork['id'];
+                $fork_url = ($mod_rewrite == '1') ? $baseurl . $fork_ident : $baseurl . 'paste.php?id=' . $fork_ident;
+                $diff_url = rtrim($baseurl, '/') . '/diff.php?a=' . urlencode((string)$url_identifier) . '&b=' . urlencode((string)$fork_ident);
+              ?>
+                <li class="list-group-item bg-dark d-flex justify-content-between align-items-center">
+                  <div>
+                    <a href="<?php echo htmlspecialchars($fork_url, ENT_QUOTES, 'UTF-8'); ?>" class="text-light text-decoration-none">
+                      <?php echo htmlspecialchars($fork['title'] ?: 'Untitled', ENT_QUOTES, 'UTF-8'); ?>
+                    </a>
+                    <small class="text-muted ms-2">
+                      by <?php echo htmlspecialchars($fork['member'] ?: 'Guest', ENT_QUOTES, 'UTF-8'); ?>
+                      · <?php echo htmlspecialchars(date('M j, Y', strtotime($fork['date'])), ENT_QUOTES, 'UTF-8'); ?>
+                    </small>
+                  </div>
+                  <a href="<?php echo htmlspecialchars($diff_url, ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-sm btn-outline-info" title="View differences">
+                    <i class="bi bi-arrow-left-right"></i>
+                  </a>
+                </li>
+              <?php endforeach; ?>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <?php endif; ?>
 
       <!-- ===== Comments (Public) ===== -->
       <?php if ($show_comments_ui): ?>

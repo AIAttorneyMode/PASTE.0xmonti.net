@@ -23,26 +23,68 @@ require_once __DIR__ . '/includes/functions.php';
 // Search API
 if (isset($_GET['api']) && $_GET['api'] === 'search') {
   header('Content-Type: application/json');
+  header('Access-Control-Allow-Origin: *');
+  
   $query = trim($_GET['q'] ?? '');
-  if (strlen($query) < 3) {
-    echo json_encode(['error' => 'Query too short (min 3 chars)']);
+  if (strlen($query) < 2) {
+    echo json_encode(['success' => false, 'error' => 'Query too short (min 2 chars)']);
     exit;
   }
-  $limit = min(50, (int)($_GET['limit'] ?? 10));
-  $offset = max(0, (int)($_GET['offset'] ?? 0));
+  
+  $limit = min(50, max(1, (int)($_GET['limit'] ?? 10)));
+  $page = max(1, (int)($_GET['page'] ?? 1));
+  $offset = ($page - 1) * $limit;
   $search_term = '%' . $query . '%';
-  $sql = "SELECT p.id, p.title, p.code, p.date, COUNT(pv.id) AS views
+  
+  // Check if slug column exists
+  $hasSlug = false;
+  try {
+      $check = $pdo->query("SHOW COLUMNS FROM pastes LIKE 'slug'");
+      $hasSlug = $check->fetch() !== false;
+  } catch (PDOException $e) {}
+  
+  $slugCol = $hasSlug ? ', p.slug' : '';
+  
+  // Get site info for URLs
+  $stmt = $pdo->query("SELECT baseurl FROM site_info WHERE id = 1");
+  $si = $stmt->fetch() ?: [];
+  $baseurl = rtrim($si['baseurl'] ?? '', '/') . '/';
+  // mod_rewrite comes from config.php (global)
+  global $mod_rewrite;
+  $use_mod_rewrite = ((string)($mod_rewrite ?? '0') === '1');
+  
+  $sql = "SELECT p.id{$slugCol}, p.title, p.code, p.date, p.member, COUNT(pv.id) AS views
           FROM pastes p LEFT JOIN paste_views pv ON p.id = pv.paste_id
-          WHERE p.visible = '0' AND p.password = 'NONE' AND (p.title LIKE ? OR p.content LIKE ?)
+          WHERE p.visible = '0' AND p.password = 'NONE' AND p.encrypt = '0' 
+          AND (p.title LIKE ? OR p.content LIKE ?)
           GROUP BY p.id ORDER BY p.date DESC LIMIT ? OFFSET ?";
   $stmt = $pdo->prepare($sql);
   $stmt->execute([$search_term, $search_term, $limit, $offset]);
   $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-  $count_sql = "SELECT COUNT(*) FROM pastes WHERE visible = '0' AND password = 'NONE' AND (title LIKE ? OR content LIKE ?)";
+  
+  // Add URLs to results
+  foreach ($results as &$row) {
+      $identifier = ($hasSlug && !empty($row['slug'])) ? $row['slug'] : $row['id'];
+      $row['url'] = $use_mod_rewrite ? $baseurl . $identifier : $baseurl . 'paste.php?id=' . $identifier;
+  }
+  unset($row);
+  
+  $count_sql = "SELECT COUNT(*) FROM pastes WHERE visible = '0' AND password = 'NONE' AND encrypt = '0' AND (title LIKE ? OR content LIKE ?)";
   $count_stmt = $pdo->prepare($count_sql);
   $count_stmt->execute([$search_term, $search_term]);
   $total = (int)$count_stmt->fetchColumn();
-  echo json_encode(['results' => $results, 'total' => $total]);
+  
+  echo json_encode([
+      'success' => true,
+      'query' => $query,
+      'results' => $results, 
+      'pagination' => [
+          'page' => $page,
+          'limit' => $limit,
+          'total' => $total,
+          'pages' => (int)ceil($total / $limit)
+      ]
+  ]);
   exit;
 }
 
@@ -198,8 +240,13 @@ try {
     $totalPages = 1;
     $error = '';
 
+    // Check if slug column exists (for backwards compatibility)
+    $hasSlug = columnExists($pdo, 'pastes', 'slug');
+    $slugCol = $hasSlug ? ', p.slug' : '';
+    $slugGroup = $hasSlug ? ', p.slug' : '';
+
     // Base query with LEFT JOIN to paste_views
-    $baseQuery = "SELECT p.id, p.title, p.code, p.date, UNIX_TIMESTAMP(p.date) AS now_time, p.encrypt, p.member, COUNT(pv.id) AS view_count 
+    $baseQuery = "SELECT p.id{$slugCol}, p.title, p.code, p.date, UNIX_TIMESTAMP(p.date) AS now_time, p.encrypt, p.member, COUNT(pv.id) AS view_count 
                   FROM pastes p 
                   LEFT JOIN paste_views pv ON p.id = pv.paste_id 
                   WHERE p.visible = '0' AND p.password = 'NONE'";
@@ -216,7 +263,7 @@ try {
     }
 
     // Add GROUP BY and ORDER BY
-    $baseQuery .= " GROUP BY p.id, p.title, p.code, p.date, p.encrypt, p.member ORDER BY $sortColumn $sortDirection LIMIT ? OFFSET ?";
+    $baseQuery .= " GROUP BY p.id, p.title, p.code, p.date, p.encrypt, p.member{$slugGroup} ORDER BY $sortColumn $sortDirection LIMIT ? OFFSET ?";
     $params[] = $perPage;
     $params[] = $offset;
 
@@ -243,8 +290,14 @@ try {
         if ($row['encrypt'] == '1') {
             $row['title'] = decrypt($row['title'], hex2bin(SECRET)) ?? $row['title'];
         }
+        // Ensure slug key exists even if column doesn't
+        if (!isset($row['slug'])) {
+            $row['slug'] = '';
+        }
+        // Use slug if available, otherwise fall back to numeric ID
+        $url_identifier = !empty($row['slug']) ? $row['slug'] : $row['id'];
         $row['time_display'] = formatRealTime($row['date']);
-        $row['url'] = $mod_rewrite == '1' ? $baseurl . $row['id'] : $baseurl . 'paste.php?id=' . $row['id'];
+        $row['url'] = $mod_rewrite == '1' ? $baseurl . $url_identifier : $baseurl . 'paste.php?id=' . $url_identifier;
         $row['title'] = truncate($row['title'], 20, 50);
         $row['views'] = $row['view_count'];
     }

@@ -205,6 +205,20 @@ $web_user = $_SERVER['USER']
 								re-encrypt them with your new key (secure IV+HMAC format).
 							  </small>
 							</div>
+							<div class="col-12">
+							  <hr>
+							  <h6 class="mb-2">URL Slug Generation (v3.4+)</h6>
+							  <div class="form-check mb-2">
+							    <input class="form-check-input" type="checkbox" id="generate_slugs" name="generate_slugs" checked>
+							    <label class="form-check-label" for="generate_slugs">
+							      Generate random slugs for existing pastes
+							    </label>
+							  </div>
+							  <small class="text-muted">
+								Creates random URL slugs (like <code>/jbFzprF6</code>) for all existing pastes that don't have one.
+								This enables the new URL format. Numeric IDs will still work unless you block them in admin settings.
+							  </small>
+							</div>
                             <div class="col-md-6">
                                 <label for="admin_user" class="form-label">Username</label>
                                 <input type="text" class="form-control" id="admin_user" name="admin_user" required>

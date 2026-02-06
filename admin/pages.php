@@ -43,6 +43,7 @@ try {
     $nav_parent = null;
     $sort_order = 0;
     $is_active = 1;
+    $external_url = '';
 
     // PARENT choices (top-level header/both only)
     $parentChoicesHeader = $pdo->query("
@@ -59,6 +60,7 @@ try {
         $page_name    = trim((string)($_POST['page_name'] ?? ''));
         $page_title   = trim((string)($_POST['page_title'] ?? ''));
         $page_content = (string)($_POST['data'] ?? '');
+        $external_url = trim((string)($_POST['external_url'] ?? ''));
 
         // placement & meta
         $location     = (string)($_POST['location'] ?? '');
@@ -82,18 +84,19 @@ try {
                        location = ?,
                        nav_parent = ?,
                        sort_order = ?,
-                       is_active = ?
+                       is_active = ?,
+                       external_url = ?
                  WHERE id = ?
             ");
-            $stmt->execute([$date, $page_name, $page_title, $page_content, $location, $nav_parent, $sort_order, $is_active, $edit_id]);
+            $stmt->execute([$date, $page_name, $page_title, $page_content, $location, $nav_parent, $sort_order, $is_active, $external_url ?: null, $edit_id]);
 
             $msg = '<div class="alert alert-success text-center">Page updated successfully</div>';
         } else {
             $stmt = $pdo->prepare("
-                INSERT INTO pages (last_date, page_name, page_title, page_content, location, nav_parent, sort_order, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO pages (last_date, page_name, page_title, page_content, location, nav_parent, sort_order, is_active, external_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
-            $stmt->execute([$date, $page_name, $page_title, $page_content, $location, $nav_parent, $sort_order, $is_active]);
+            $stmt->execute([$date, $page_name, $page_title, $page_content, $location, $nav_parent, $sort_order, $is_active, $external_url ?: null]);
             $msg = '<div class="alert alert-success text-center">Page created successfully</div>';
         }
 
@@ -103,6 +106,7 @@ try {
         $nav_parent = null;
         $sort_order = 0;
         $is_active = 1;
+        $external_url = '';
     }
 
     // EDIT load
@@ -113,11 +117,12 @@ try {
         if ($r = $row->fetch()) {
             $page_name    = $r['page_name'];
             $page_title   = $r['page_title'];
-            $page_content = $r['page_content'];
+            $page_content = $r['page_content'] ?? '';
             $location     = (string)$r['location'];
             $nav_parent   = $r['nav_parent'];
             $sort_order   = (int)$r['sort_order'];
             $is_active    = (int)$r['is_active'];
+            $external_url = $r['external_url'] ?? '';
         }
     }
 
@@ -352,6 +357,13 @@ try {
                 <input class="form-control" id="page_title" name="page_title" type="text"
                        placeholder="Enter page title"
                        value="<?php echo htmlspecialchars($page_title); ?>">
+              </div>
+              <div class="col-md-12">
+                <label for="external_url" class="form-label">External URL (optional)</label>
+                <input class="form-control" id="external_url" name="external_url" type="text"
+                       placeholder="Leave empty for normal page, or enter URL like api-docs.php or https://example.com"
+                       value="<?php echo htmlspecialchars($external_url); ?>">
+                <div class="form-text">If set, clicking the nav link will redirect to this URL instead of showing page content.</div>
               </div>
               <div class="col-md-4">
                 <label class="form-label">Show link in</label>

@@ -16,7 +16,7 @@
  * GNU General Public License in LICENCE for more details.
  */
 
-$currentversion = 3.2;
+$currentversion = 3.4;
 $pastelimit = "10"; // 10 MB
 
 // OAuth settings (for signups)

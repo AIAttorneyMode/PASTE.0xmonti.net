@@ -274,6 +274,102 @@ try {
 
     $total_pastes = getTotalPastes($pdo, $user_username);
 
+    // ========================================================================
+    // API Key Management
+    // ========================================================================
+    
+    // Check if API is enabled
+    $api_enabled = true;
+    $api_keys_per_user = 5;
+    try {
+        $stmt = $pdo->query("SELECT option_name, option_value FROM paste_options WHERE option_name IN ('api_enabled', 'api_keys_per_user')");
+        while ($row = $stmt->fetch()) {
+            if ($row['option_name'] === 'api_enabled') {
+                $api_enabled = $row['option_value'] !== '0';
+            } elseif ($row['option_name'] === 'api_keys_per_user') {
+                $api_keys_per_user = (int)$row['option_value'];
+            }
+        }
+    } catch (PDOException $e) {
+        // Use defaults
+    }
+    
+    // Handle API key creation
+    $newly_created_key = null;
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_api_key']) && $api_enabled) {
+        if (!hash_equals($_SESSION['csrf_token'] ?? '', (string)($_POST['csrf_token'] ?? ''))) {
+            $error = $lang['invalidtoken'] ?? 'Invalid CSRF token.';
+        } else {
+            // Check key limit
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM api_keys WHERE user_id = ?");
+            $stmt->execute([$user_id]);
+            $keyCount = (int)$stmt->fetchColumn();
+            
+            if ($keyCount >= $api_keys_per_user) {
+                $error = "You can only have $api_keys_per_user API keys. Please delete one first.";
+            } else {
+                $keyName = trim($_POST['key_name'] ?? 'Default');
+                if (empty($keyName)) $keyName = 'Default';
+                
+                // Generate API key
+                $apiKey = bin2hex(random_bytes(32));
+                
+                $stmt = $pdo->prepare("INSERT INTO api_keys (user_id, api_key, name) VALUES (?, ?, ?)");
+                $stmt->execute([$user_id, $apiKey, $keyName]);
+                
+                // Store the full key temporarily so we can show it once
+                $newly_created_key = $apiKey;
+                $success = "API key created successfully!";
+            }
+        }
+    }
+    
+    // Handle API key deletion
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_api_key'])) {
+        if (!hash_equals($_SESSION['csrf_token'] ?? '', (string)($_POST['csrf_token'] ?? ''))) {
+            $error = $lang['invalidtoken'] ?? 'Invalid CSRF token.';
+        } else {
+            $keyId = (int)$_POST['delete_api_key'];
+            $stmt = $pdo->prepare("DELETE FROM api_keys WHERE id = ? AND user_id = ?");
+            $stmt->execute([$keyId, $user_id]);
+            if ($stmt->rowCount() > 0) {
+                $success = "API key deleted.";
+            }
+        }
+    }
+    
+    // Handle API key regeneration
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['regenerate_api_key'])) {
+        if (!hash_equals($_SESSION['csrf_token'] ?? '', (string)($_POST['csrf_token'] ?? ''))) {
+            $error = $lang['invalidtoken'] ?? 'Invalid CSRF token.';
+        } else {
+            $keyId = (int)$_POST['regenerate_api_key'];
+            // Verify ownership
+            $stmt = $pdo->prepare("SELECT id FROM api_keys WHERE id = ? AND user_id = ?");
+            $stmt->execute([$keyId, $user_id]);
+            if ($stmt->fetch()) {
+                // Generate new key
+                $newApiKey = bin2hex(random_bytes(32));
+                $stmt = $pdo->prepare("UPDATE api_keys SET api_key = ?, last_used_at = NULL WHERE id = ?");
+                $stmt->execute([$newApiKey, $keyId]);
+                $newly_created_key = $newApiKey;
+                $success = "API key regenerated successfully!";
+            }
+        }
+    }
+    
+    // Get user's API keys
+    $user_api_keys = [];
+    if ($api_enabled) {
+        try {
+            $stmt = $pdo->prepare("SELECT id, name, LEFT(api_key, 8) as key_prefix, created_at, last_used_at, is_active FROM api_keys WHERE user_id = ? ORDER BY created_at DESC");
+            $stmt->execute([$user_id]);
+            $user_api_keys = $stmt->fetchAll();
+        } catch (PDOException $e) {
+            // Table might not exist
+        }
+    }
+
     // Ads
     $stmt = $pdo->query("SELECT * FROM ads WHERE id = '1'");
     $row = $stmt->fetch() ?: [];

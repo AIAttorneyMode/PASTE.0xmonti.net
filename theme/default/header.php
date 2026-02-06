@@ -64,46 +64,60 @@ $captcha_mode = $_SESSION['captcha_mode'] ?? 'none';
 	<?php endif; ?>
 </head>
 <body>
-    <!-- Header -->
-    <nav class="navbar navbar-expand-lg bg-dark">
-        <div class="container-xxl d-flex align-items-center">
-            <a class="navbar-brand" href="<?= htmlspecialchars($baseurl ?? '', ENT_QUOTES, 'UTF-8') ?>">
-                <i class="bi bi-clipboard"></i> <?= htmlspecialchars($site_name ?? '', ENT_QUOTES, 'UTF-8') ?>
-            </a>
-			<?php if (!isset($privatesite) || $privatesite != 'on'): ?>
-						<div class="navbar-center">
-							<form class="search-form" action="<?= htmlspecialchars($baseurl . ($mod_rewrite == '1' ? 'archive' : 'archive.php'), ENT_QUOTES, 'UTF-8') ?>" method="get">
-								<input class="form-control me-2" type="search" name="q" id="searchInput" placeholder="<?= htmlspecialchars($lang['search'] ?? 'Search pastes...', ENT_QUOTES, 'UTF-8') ?>" aria-label="Search" value="<?= htmlspecialchars($_GET['q'] ?? '', ENT_QUOTES, 'UTF-8') ?>" autocomplete="off">
-								<button class="btn btn-outline-light" type="submit"><i class="bi bi-search"></i></button>
-							</form>
-						</div>
-			<?php endif; ?>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-				<?php
-				// Archive link
-				if (!isset($privatesite) || $privatesite != 'on') {
-					if ($mod_rewrite == '1') {
-						echo '<li class="nav-item"><a class="nav-link" href="' . htmlspecialchars($baseurl . 'archive', ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($lang['archive'] ?? 'Archive', ENT_QUOTES, 'UTF-8') . '</a></li>';
-					} else {
-						echo '<li class="nav-item"><a class="nav-link" href="' . htmlspecialchars($baseurl . 'archive.php', ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($lang['archive'] ?? 'Archive', ENT_QUOTES, 'UTF-8') . '</a></li>';
+	<!-- Header -->
+	<nav class="navbar navbar-expand-lg bg-dark">
+		<div class="container-xxl d-flex align-items-center">
+			<!-- Top bar -->
+			<div class="d-flex align-items-center">
+				<!-- Logo -->
+				<a class="navbar-brand" href="<?= htmlspecialchars($baseurl ?? '', ENT_QUOTES, 'UTF-8') ?>">
+					<i class="bi bi-clipboard"></i> <?= htmlspecialchars($site_name ?? '', ENT_QUOTES, 'UTF-8') ?>
+				</a>
+
+				<?php if (!isset($privatesite) || $privatesite != 'on'): ?>
+					<!-- Search -->
+					<div class="navbar-center">
+						<form class="search-form" action="<?= htmlspecialchars($baseurl . ($mod_rewrite == '1' ? 'archive' : 'archive.php'), ENT_QUOTES, 'UTF-8') ?>" method="get">
+							<input class="form-control me-2" type="search" name="q" id="searchInput"
+								   placeholder="<?= htmlspecialchars($lang['search'] ?? 'Search pastes...', ENT_QUOTES, 'UTF-8') ?>"
+								   value="<?= htmlspecialchars($_GET['q'] ?? '', ENT_QUOTES, 'UTF-8') ?>" autocomplete="off">
+							<button class="btn btn-outline-light" type="submit"><i class="bi bi-search"></i></button>
+						</form>
+					</div>
+				<?php endif; ?>
+
+				<!-- Toggler -->
+				<button class="navbar-toggler flex-shrink-0" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+						aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+					<span class="navbar-toggler-icon"></span>
+				</button>
+			</div>
+
+			<!-- Menu  -->
+			<div class="collapse navbar-collapse" id="navbarNav">
+				<ul class="navbar-nav ms-auto">
+					<?php
+					// Archive link
+					if (!isset($privatesite) || $privatesite != 'on') {
+						if ($mod_rewrite == '1') {
+							echo '<li class="nav-item"><a class="nav-link" href="' . htmlspecialchars($baseurl . 'archive', ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($lang['archive'] ?? 'Archive', ENT_QUOTES, 'UTF-8') . '</a></li>';
+						} else {
+							echo '<li class="nav-item"><a class="nav-link" href="' . htmlspecialchars($baseurl . 'archive.php', ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($lang['archive'] ?? 'Archive', ENT_QUOTES, 'UTF-8') . '</a></li>';
+						}
 					}
-				}
-				// Dynamic pages (header/both) from `pages` table
-				$headerLinks = getNavLinks($pdo, 'header');
-				echo renderBootstrapNav($headerLinks);
-				?>
-                    <!-- Account / Guest dropdown -->
-                    <li class="nav-item dropdown navbar-nav-guest">
+					// Dynamic pages (header/both) from `pages` table
+					$headerLinks = getNavLinks($pdo, 'header');
+					echo renderBootstrapNav($headerLinks);
+					?>
+
+					<!-- Account/Guest dropdown -->
+					<li class="nav-item dropdown navbar-nav-guest">
 					<?php if (isset($_SESSION['token'])): ?>
-                        <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                            <i class="bi bi-person"></i> <?= htmlspecialchars($_SESSION['username'] ?? '', ENT_QUOTES, 'UTF-8') ?>
-                        </a>
-                        <ul class="dropdown-menu dropdown-menu-end">
-                            <li><h6 class="dropdown-header"><?= htmlspecialchars($lang['my_account'] ?? 'My Account', ENT_QUOTES, 'UTF-8') ?></h6></li>
+						<a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+							<i class="bi bi-person"></i> <?= htmlspecialchars($_SESSION['username'] ?? '', ENT_QUOTES, 'UTF-8') ?>
+						</a>
+						<ul class="dropdown-menu dropdown-menu-end">
+							<li><h6 class="dropdown-header"><?= htmlspecialchars($lang['my_account'] ?? 'My Account', ENT_QUOTES, 'UTF-8') ?></h6></li>
 						<?php
 						if ($mod_rewrite == '1') {
 							echo '<li><a class="dropdown-item" href="' . htmlspecialchars($baseurl . 'user/' . urlencode($_SESSION['username'] ?? ''), ENT_QUOTES, 'UTF-8') . '"><i class="bi bi-clipboard"></i> ' . htmlspecialchars($lang['pastes'] ?? 'Pastes', ENT_QUOTES, 'UTF-8') . '</a></li>';
@@ -117,27 +131,28 @@ $captcha_mode = $_SESSION['captcha_mode'] ?? 'none';
 							echo '<li><a class="dropdown-item" href="' . htmlspecialchars($baseurl . 'login.php?action=logout', ENT_QUOTES, 'UTF-8') . '"><i class="bi bi-box-arrow-right"></i> ' . htmlspecialchars($lang['logout'] ?? 'Logout', ENT_QUOTES, 'UTF-8') . '</a></li>';
 						}
 						?>
-                        </ul>
+						</ul>
 						<?php else: ?>
-                        <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                            <i class="bi bi-person"></i> <?= htmlspecialchars($lang['guest'] ?? 'Guest', ENT_QUOTES, 'UTF-8') ?>
-                        </a>
-                        <ul class="dropdown-menu dropdown-menu-end">
-                            <li><a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#signin"><i class="bi bi-box-arrow-in-right"></i> <?= htmlspecialchars($lang['login'] ?? 'Login', ENT_QUOTES, 'UTF-8') ?></a></li>
-                            <li><a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#signup"><i class="bi bi-person-plus"></i> <?= htmlspecialchars($lang['signup'] ?? 'Register', ENT_QUOTES, 'UTF-8') ?></a></li>
+						<a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+							<i class="bi bi-person"></i> <?= htmlspecialchars($lang['guest'] ?? 'Guest', ENT_QUOTES, 'UTF-8') ?>
+						</a>
+						<ul class="dropdown-menu dropdown-menu-end">
+							<li><a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#signin"><i class="bi bi-box-arrow-in-right"></i> <?= htmlspecialchars($lang['login'] ?? 'Login', ENT_QUOTES, 'UTF-8') ?></a></li>
+							<li><a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#signup"><i class="bi bi-person-plus"></i> <?= htmlspecialchars($lang['signup'] ?? 'Register', ENT_QUOTES, 'UTF-8') ?></a></li>
 							<?php if ($enablegoog == 'yes'): ?>
-                            <li><a class="dropdown-item btn-oauth" href="<?= htmlspecialchars($baseurl . 'login.php?login=google', ENT_QUOTES, 'UTF-8') ?>"><i class="bi bi-google oauth-icon"></i> <?= htmlspecialchars($lang['login_with_google'] ?? 'Google', ENT_QUOTES, 'UTF-8') ?></a></li>
+							<li><a class="dropdown-item btn-oauth" href="<?= htmlspecialchars($baseurl . 'login.php?login=google', ENT_QUOTES, 'UTF-8') ?>"><i class="bi bi-google oauth-icon"></i> <?= htmlspecialchars($lang['login_with_google'] ?? 'Google', ENT_QUOTES, 'UTF-8') ?></a></li>
 							<?php endif; ?>
 							<?php if ($enablefb == 'yes'): ?>
-                            <li><a class="dropdown-item btn-oauth" href="<?= htmlspecialchars($baseurl . 'login.php?login=facebook', ENT_QUOTES, 'UTF-8') ?>"><i class="bi bi-facebook oauth-icon"></i> <?= htmlspecialchars($lang['login_with_facebook'] ?? 'Facebook', ENT_QUOTES, 'UTF-8') ?></a></li>
+							<li><a class="dropdown-item btn-oauth" href="<?= htmlspecialchars($baseurl . 'login.php?login=facebook', ENT_QUOTES, 'UTF-8') ?>"><i class="bi bi-facebook oauth-icon"></i> <?= htmlspecialchars($lang['login_with_facebook'] ?? 'Facebook', ENT_QUOTES, 'UTF-8') ?></a></li>
 							<?php endif; ?>
-                        </ul>
+						</ul>
 						<?php endif; ?>
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </nav>
+					</li>
+				</ul>
+			</div>
+		</div>
+	</nav>
+	
 <?php if (!isset($privatesite) || $privatesite != 'on'): ?>
     <!-- Sign in Modal -->
     <div class="modal fade" id="signin" tabindex="-1" aria-labelledby="signinModalLabel" aria-hidden="true">

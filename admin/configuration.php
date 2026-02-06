@@ -91,7 +91,7 @@ function require_mail_vendor_or_json_error(): void {
 
 // --- Active tab persistence (server-side default) ---
 $activeTab = $_POST['active_tab'] ?? $_GET['tab'] ?? 'siteinfo';
-$validTabs = ['siteinfo','permissions','captcha','mail'];
+$validTabs = ['siteinfo','permissions','urlsettings','api','captcha','mail'];
 if (!in_array($activeTab, $validTabs, true)) {
     $activeTab = 'siteinfo';
 }
@@ -142,6 +142,7 @@ try {
     $row = $stmt->fetch() ?: [];
     $disableguest = trim($row['disableguest'] ?? '');
     $siteprivate = trim($row['siteprivate'] ?? '');
+    $hiderecentpastes = trim($row['hiderecentpastes'] ?? '');
     $stmt = $pdo->query("SELECT * FROM mail WHERE id = 1");
     $row = $stmt->fetch() ?: [];
     $required_fields = ['verification', 'smtp_host', 'smtp_username', 'smtp_password', 'smtp_port', 'protocol', 'auth', 'socket', 'oauth_client_id', 'oauth_client_secret', 'oauth_refresh_token'];
@@ -163,6 +164,35 @@ try {
     $oauth_refresh_token = trim($row['oauth_refresh_token'] ?? '');
     $oauth_status = $oauth_refresh_token ? 'OAuth refresh token is set.' : 'OAuth refresh token not set. Configure Gmail OAuth if using smtp.gmail.com.';
     $redirect_uri = $baseurl ? rtrim($baseurl, '/') . '/oauth/google_smtp.php' : '';
+    
+    // URL settings (paste_options table)
+    $current_url_mode = 'slug';
+    $current_slug_length = 8;
+    $current_block_numeric = false;
+    $current_api_enabled = true;
+    $current_api_keys_per_user = 5;
+    try {
+        $tableCheck = $pdo->query("SHOW TABLES LIKE 'paste_options'");
+        if ($tableCheck->rowCount() > 0) {
+            $stmt = $pdo->query("SELECT option_name, option_value FROM paste_options WHERE option_name IN ('url_mode', 'slug_length', 'block_numeric_urls', 'api_enabled', 'api_keys_per_user')");
+            while ($row = $stmt->fetch()) {
+                if ($row['option_name'] === 'url_mode') {
+                    $current_url_mode = $row['option_value'] ?: 'slug';
+                } elseif ($row['option_name'] === 'slug_length') {
+                    $current_slug_length = (int)($row['option_value'] ?: 8);
+                } elseif ($row['option_name'] === 'block_numeric_urls') {
+                    $current_block_numeric = ($row['option_value'] === '1');
+                } elseif ($row['option_name'] === 'api_enabled') {
+                    $current_api_enabled = ($row['option_value'] !== '0');
+                } elseif ($row['option_name'] === 'api_keys_per_user') {
+                    $current_api_keys_per_user = (int)($row['option_value'] ?: 5);
+                }
+            }
+        }
+    } catch (PDOException $e) {
+        // Table might not exist yet - use defaults
+    }
+    
     $msg = '';
     if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         error_log("configuration.php: POST request received with CSRF token: " . ($_POST['csrf_token'] ?? 'none') . ", Session CSRF: {$_SESSION['csrf_token']}, Session ID: " . session_id());
@@ -426,15 +456,154 @@ try {
             } elseif (isset($_POST['permissions'])) {
                 $disableguest = trim($_POST['disableguest'] ?? '');
                 $siteprivate = trim($_POST['siteprivate'] ?? '');
+                $hiderecentpastes = trim($_POST['hiderecentpastes'] ?? '');
                 try {
-                    $stmt = $pdo->prepare("UPDATE site_permissions SET disableguest = ?, siteprivate = ? WHERE id = 1");
-                    $stmt->execute([$disableguest, $siteprivate]);
+                    $stmt = $pdo->prepare("UPDATE site_permissions SET disableguest = ?, siteprivate = ?, hiderecentpastes = ? WHERE id = 1");
+                    $stmt->execute([$disableguest, $siteprivate, $hiderecentpastes]);
                     $msg_plain = 'Site permissions saved';
                     $msg_type = 'success';
                     error_log("configuration.php: Site permissions updated successfully");
                 } catch (PDOException $e) {
                     error_log("configuration.php: Permissions update error: " . $e->getMessage());
                     $msg_plain = $e->getMessage();
+                    $msg_type = 'error';
+                }
+            } elseif (isset($_POST['url_settings'])) {
+                $url_mode = trim($_POST['url_mode'] ?? 'slug');
+                $slug_length = (int)($_POST['slug_length'] ?? 8);
+                $block_numeric_urls = isset($_POST['block_numeric_urls']) ? '1' : '0';
+                
+                // Validate
+                if (!in_array($url_mode, ['slug', 'numeric'], true)) {
+                    $url_mode = 'slug';
+                }
+                if ($slug_length < 4 || $slug_length > 32) {
+                    $slug_length = 8;
+                }
+                
+                try {
+                    // Check if paste_options table exists
+                    $tableCheck = $pdo->query("SHOW TABLES LIKE 'paste_options'");
+                    if ($tableCheck->rowCount() === 0) {
+                        // Create the table
+                        $pdo->exec("CREATE TABLE paste_options (
+                            id INT NOT NULL AUTO_INCREMENT,
+                            option_name VARCHAR(100) NOT NULL,
+                            option_value TEXT,
+                            PRIMARY KEY(id),
+                            UNIQUE KEY idx_option_name (option_name)
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+                    }
+                    
+                    // Helper function to upsert options
+                    $upsertOption = function($name, $value) use ($pdo) {
+                        $stmt = $pdo->prepare("SELECT id FROM paste_options WHERE option_name = ?");
+                        $stmt->execute([$name]);
+                        if ($stmt->fetch()) {
+                            $stmt = $pdo->prepare("UPDATE paste_options SET option_value = ? WHERE option_name = ?");
+                            $stmt->execute([$value, $name]);
+                        } else {
+                            $stmt = $pdo->prepare("INSERT INTO paste_options (option_name, option_value) VALUES (?, ?)");
+                            $stmt->execute([$name, $value]);
+                        }
+                    };
+                    
+                    $upsertOption('url_mode', $url_mode);
+                    $upsertOption('slug_length', (string)$slug_length);
+                    $upsertOption('block_numeric_urls', $block_numeric_urls);
+                    
+                    // If enabling block_numeric_urls, generate slugs for pastes that don't have them
+                    $slugsGenerated = 0;
+                    if ($block_numeric_urls === '1') {
+                        $stmt = $pdo->query("SELECT COUNT(*) FROM pastes WHERE slug IS NULL OR slug = ''");
+                        $pastesWithoutSlugs = (int)$stmt->fetchColumn();
+                        
+                        if ($pastesWithoutSlugs > 0) {
+                            // Generate slugs for pastes without them
+                            $charset = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+                            $charsetLen = strlen($charset);
+                            
+                            $stmt = $pdo->query("SELECT id FROM pastes WHERE slug IS NULL OR slug = ''");
+                            $pastes = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                            
+                            foreach ($pastes as $pasteId) {
+                                $attempts = 0;
+                                $currentLength = $slug_length;
+                                
+                                do {
+                                    $slug = '';
+                                    for ($i = 0; $i < $currentLength; $i++) {
+                                        $slug .= $charset[random_int(0, $charsetLen - 1)];
+                                    }
+                                    
+                                    $checkStmt = $pdo->prepare("SELECT COUNT(*) FROM pastes WHERE slug = ?");
+                                    $checkStmt->execute([$slug]);
+                                    $exists = (int)$checkStmt->fetchColumn() > 0;
+                                    
+                                    if (!$exists) {
+                                        $updateStmt = $pdo->prepare("UPDATE pastes SET slug = ? WHERE id = ?");
+                                        $updateStmt->execute([$slug, $pasteId]);
+                                        $slugsGenerated++;
+                                        break;
+                                    }
+                                    
+                                    $attempts++;
+                                    if ($attempts >= 5) {
+                                        $currentLength++;
+                                        $attempts = 0;
+                                    }
+                                } while ($attempts < 15);
+                            }
+                        }
+                    }
+                    
+                    $msg_plain = 'URL settings saved successfully';
+                    if ($slugsGenerated > 0) {
+                        $msg_plain .= ". Generated slugs for $slugsGenerated existing pastes.";
+                        
+                        // Regenerate sitemap with new slug URLs
+                        require_once(__DIR__ . '/../includes/functions.php');
+                        $sitemapResult = regenerateSitemap($pdo);
+                        if ($sitemapResult['success']) {
+                            $msg_plain .= " Sitemap updated with {$sitemapResult['count']} URLs.";
+                        }
+                    }
+                    $msg_type = 'success';
+                    error_log("configuration.php: URL settings updated - mode: $url_mode, length: $slug_length, block_numeric: $block_numeric_urls, slugs_generated: $slugsGenerated");
+                } catch (PDOException $e) {
+                    error_log("configuration.php: URL settings update error: " . $e->getMessage());
+                    $msg_plain = 'Error saving URL settings: ' . $e->getMessage();
+                    $msg_type = 'error';
+                }
+            } elseif (isset($_POST['api_settings'])) {
+                $api_enabled = isset($_POST['api_enabled']) ? '1' : '0';
+                $api_keys_per_user = max(1, min(20, (int)($_POST['api_keys_per_user'] ?? 5)));
+                
+                try {
+                    // Ensure paste_options table exists
+                    $tableCheck = $pdo->query("SHOW TABLES LIKE 'paste_options'");
+                    if ($tableCheck->rowCount() === 0) {
+                        $pdo->exec("CREATE TABLE paste_options (
+                            id INT NOT NULL AUTO_INCREMENT,
+                            option_name VARCHAR(100) NOT NULL,
+                            option_value TEXT,
+                            PRIMARY KEY(id),
+                            UNIQUE KEY idx_option_name (option_name)
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+                    }
+                    
+                    $pdo->exec("INSERT INTO paste_options (option_name, option_value) VALUES ('api_enabled', '$api_enabled') ON DUPLICATE KEY UPDATE option_value = '$api_enabled'");
+                    $pdo->exec("INSERT INTO paste_options (option_name, option_value) VALUES ('api_keys_per_user', '$api_keys_per_user') ON DUPLICATE KEY UPDATE option_value = '$api_keys_per_user'");
+                    
+                    $msg_plain = 'API settings saved successfully';
+                    $msg_type = 'success';
+                    
+                    // Update local vars for display
+                    $current_api_enabled = ($api_enabled === '1');
+                    $current_api_keys_per_user = $api_keys_per_user;
+                } catch (PDOException $e) {
+                    error_log("configuration.php: API settings update error: " . $e->getMessage());
+                    $msg_plain = 'Error saving API settings: ' . $e->getMessage();
                     $msg_type = 'error';
                 }
             } elseif (isset($_POST['smtp_code'])) {
@@ -631,6 +800,12 @@ try {
               <button class="nav-link <?php echo $activeTab==='permissions'?'active':''; ?>" id="permissions-tab" data-bs-toggle="tab" data-bs-target="#permissions" type="button" role="tab" aria-controls="permissions" aria-selected="<?php echo $activeTab==='permissions'?'true':'false'; ?>">Permissions</button>
             </li>
             <li class="nav-item" role="presentation">
+              <button class="nav-link <?php echo $activeTab==='urlsettings'?'active':''; ?>" id="urlsettings-tab" data-bs-toggle="tab" data-bs-target="#urlsettings" type="button" role="tab" aria-controls="urlsettings" aria-selected="<?php echo $activeTab==='urlsettings'?'true':'false'; ?>">URL Settings</button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link <?php echo $activeTab==='api'?'active':''; ?>" id="api-tab" data-bs-toggle="tab" data-bs-target="#api" type="button" role="tab" aria-controls="api" aria-selected="<?php echo $activeTab==='api'?'true':'false'; ?>">API</button>
+            </li>
+            <li class="nav-item" role="presentation">
               <button class="nav-link <?php echo $activeTab==='captcha'?'active':''; ?>" id="captcha-tab" data-bs-toggle="tab" data-bs-target="#captcha" type="button" role="tab" aria-controls="captcha" aria-selected="<?php echo $activeTab==='captcha'?'true':'false'; ?>">Captcha Settings</button>
             </li>
             <li class="nav-item" role="presentation">
@@ -702,11 +877,96 @@ try {
                   <label class="form-check-label" for="disableguest">Only allow registered users to paste</label>
                 </div>
                 <div class="form-check mb-3">
+                  <input class="form-check-input" type="checkbox" name="hiderecentpastes" id="hiderecentpastes" <?php if ($hiderecentpastes == 'on') echo 'checked'; ?>>
+                  <label class="form-check-label" for="hiderecentpastes">Hide Recent Pastes from sidebar</label>
+                  <small class="form-text text-muted d-block">Hides the recent pastes list without making the whole site private.</small>
+                </div>
+                <div class="form-check mb-3">
                   <input class="form-check-input" type="checkbox" name="siteprivate" id="siteprivate" <?php if ($siteprivate == 'on') echo 'checked'; ?>>
                   <label class="form-check-label" for="siteprivate">Make site private (no Recent Pastes for non-members)</label>
                 </div>
                 <input type="hidden" name="permissions" value="permissions" />
                 <button type="submit" class="btn btn-primary">Save</button>
+              </form>
+            </div>
+            <!-- URL Settings -->
+            <div class="tab-pane fade <?php echo $activeTab==='urlsettings'?'show active':''; ?>" id="urlsettings" role="tabpanel" aria-labelledby="urlsettings-tab">
+              <form method="POST" action="<?php echo htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8'); ?>">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? '', ENT_QUOTES, 'UTF-8'); ?>">
+                <input type="hidden" name="active_tab" value="urlsettings">
+                <div class="mb-4">
+                  <h5>Paste URL Format</h5>
+                  <p class="text-muted">Choose how paste URLs are generated.</p>
+                </div>
+                <div class="mb-3">
+                  <label for="url_mode" class="form-label">URL Mode</label>
+                  <select class="form-select" id="url_mode" name="url_mode">
+                    <option value="slug" <?php echo $current_url_mode === 'slug' ? 'selected' : ''; ?>>Random Slug (e.g., /jbFzprF6)</option>
+                    <option value="numeric" <?php echo $current_url_mode === 'numeric' ? 'selected' : ''; ?>>Numeric ID (e.g., /12345)</option>
+                  </select>
+                  <div class="form-text">
+                    <strong>Random Slug:</strong> Generates URLs like <code>yoursite.com/jbFzprF6</code> - harder to enumerate, looks cleaner<br>
+                    <strong>Numeric ID:</strong> Generates URLs like <code>yoursite.com/12345</code> - sequential, easy to guess
+                  </div>
+                </div>
+                <div class="mb-3">
+                  <label for="slug_length" class="form-label">Slug Length</label>
+                  <input type="number" class="form-control" id="slug_length" name="slug_length" value="<?php echo $current_slug_length; ?>" min="4" max="32" style="max-width: 150px;">
+                  <div class="form-text">
+                    Length of random slugs (4-32 characters). Longer = more unique combinations.<br>
+                    8 characters = ~53 trillion combinations. 6 characters = ~19 billion combinations.
+                  </div>
+                </div>
+                <div class="mb-3">
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="block_numeric_urls" name="block_numeric_urls" <?php echo $current_block_numeric ? 'checked' : ''; ?>>
+                    <label class="form-check-label" for="block_numeric_urls">
+                      <strong>Block numeric URL access</strong> - Return 404 when accessing pastes by numeric ID
+                    </label>
+                  </div>
+                </div>
+                <div class="alert alert-info">
+                  <strong>Note:</strong> Changing URL mode only affects new pastes. Run the installer to generate slugs for existing pastes.
+                </div>
+                <input type="hidden" name="url_settings" value="1">
+                <button type="submit" class="btn btn-primary">Save URL Settings</button>
+              </form>
+            </div>
+            <!-- API -->
+            <div class="tab-pane fade <?php echo $activeTab==='api'?'show active':''; ?>" id="api" role="tabpanel" aria-labelledby="api-tab">
+              <form method="POST" action="<?php echo htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8'); ?>">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? '', ENT_QUOTES, 'UTF-8'); ?>">
+                <input type="hidden" name="active_tab" value="api">
+                <div class="mb-4">
+                  <h5>Paste API</h5>
+                  <p class="text-muted">Allow users to create and manage pastes programmatically via the API.</p>
+                </div>
+                <div class="mb-3">
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="api_enabled" name="api_enabled" <?php echo $current_api_enabled ? 'checked' : ''; ?>>
+                    <label class="form-check-label" for="api_enabled">
+                      <strong>Enable API</strong>
+                    </label>
+                  </div>
+                  <div class="form-text">When disabled, all API requests will be rejected.</div>
+                </div>
+                <div class="mb-3">
+                  <label for="api_keys_per_user" class="form-label">API Keys Per User</label>
+                  <input type="number" class="form-control" id="api_keys_per_user" name="api_keys_per_user" value="<?php echo $current_api_keys_per_user; ?>" min="1" max="20" style="max-width: 150px;">
+                  <div class="form-text">Maximum number of API keys each user can create (1-20).</div>
+                </div>
+                <div class="alert alert-info">
+                  <strong>API Endpoints:</strong><br>
+                  <code>POST /api.php?action=paste</code> - Create a paste<br>
+                  <code>GET /api.php?action=get&id=X</code> - Get paste content<br>
+                  <code>GET /api.php?action=list</code> - List user's pastes<br>
+                  <code>DELETE /api.php?action=delete&id=X</code> - Delete a paste<br>
+                  <code>GET /api.php?action=search&q=X</code> - Search pastes<br>
+                  <code>GET /api.php?action=languages</code> - List available languages<br><br>
+                  Users can create API keys in their profile page. See ../api-docs.php
+                </div>
+                <input type="hidden" name="api_settings" value="1">
+                <button type="submit" class="btn btn-primary">Save API Settings</button>
               </form>
             </div>
             <!-- Captcha -->

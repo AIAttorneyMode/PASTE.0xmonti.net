@@ -1,6 +1,6 @@
 <?php
 /*
- * Paste $v3.3 2025/10/24 https://github.com/boxlabss/PASTE
+ * Paste $v3.4 2026/02/04 https://github.com/boxlabss/PASTE
  * demo: https://paste.boxlabs.uk/
  *
  * https://phpaste.sourceforge.io/
@@ -129,7 +129,106 @@
                   <button type="submit" name="submit" class="btn btn-outline-light w-100 rounded-3">
                     <?php echo htmlspecialchars($lang['submit'] ?? 'Submit', ENT_QUOTES, 'UTF-8'); ?>
                   </button>
+                </div>
+              </div>
+            </form>
 
+            <?php if (!empty($api_enabled)): ?>
+            <!-- API Keys Section -->
+            <div class="row justify-content-center mt-4">
+              <div class="col-md-8">
+                <hr class="my-4">
+                <h5 class="text-light mb-3"><i class="bi bi-key"></i> API Keys</h5>
+                <p class="text-muted small mb-3">
+                  API keys allow you to create pastes programmatically. 
+                  <a href="<?php echo htmlspecialchars($baseurl . 'api-docs.php', ENT_QUOTES, 'UTF-8'); ?>" target="_blank" class="text-info">View API documentation</a>
+                </p>
+                
+                <?php if (!empty($newly_created_key)): ?>
+                  <div class="alert alert-success">
+                    <strong><i class="bi bi-check-circle"></i> <?php echo htmlspecialchars($success ?? 'API key ready!', ENT_QUOTES, 'UTF-8'); ?></strong>
+                    <p class="mt-2 mb-1">Your API key:</p>
+                    <div class="input-group mb-2">
+                      <input type="text" class="form-control bg-dark text-light font-monospace" id="newApiKey" value="<?php echo htmlspecialchars($newly_created_key, ENT_QUOTES, 'UTF-8'); ?>" readonly>
+                      <button class="btn btn-outline-light" type="button" onclick="copyApiKey()"><i class="bi bi-clipboard"></i> Copy</button>
+                    </div>
+                    <p class="text-warning mb-0"><i class="bi bi-exclamation-triangle"></i> <strong>Copy this key now!</strong> It won't be shown again.</p>
+                  </div>
+                  <script>
+                  function copyApiKey() {
+                    var key = document.getElementById('newApiKey');
+                    key.select();
+                    document.execCommand('copy');
+                    alert('API key copied to clipboard!');
+                  }
+                  </script>
+                <?php elseif (!empty($success) && strpos($success, 'API') !== false): ?>
+                  <div class="alert alert-success"><?php echo htmlspecialchars($success, ENT_QUOTES, 'UTF-8'); ?></div>
+                <?php endif; ?>
+                
+                <?php if (!empty($user_api_keys)): ?>
+                  <div class="table-responsive mb-3">
+                    <table class="table table-dark table-hover">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Key</th>
+                          <th>Created</th>
+                          <th>Last Used</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($user_api_keys as $key): ?>
+                          <tr>
+                            <td><?php echo htmlspecialchars($key['name'], ENT_QUOTES, 'UTF-8'); ?></td>
+                            <td><code class="text-info"><?php echo htmlspecialchars($key['key_prefix'], ENT_QUOTES, 'UTF-8'); ?>...</code></td>
+                            <td class="small"><?php echo htmlspecialchars(date('M j, Y', strtotime($key['created_at'])), ENT_QUOTES, 'UTF-8'); ?></td>
+                            <td class="small"><?php echo $key['last_used_at'] ? htmlspecialchars(date('M j, Y H:i', strtotime($key['last_used_at'])), ENT_QUOTES, 'UTF-8') : '<span class="text-muted">Never</span>'; ?></td>
+                            <td>
+                              <form method="post" style="display:inline;" onsubmit="return confirm('Regenerate this API key? The old key will stop working immediately.');">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? '', ENT_QUOTES, 'UTF-8'); ?>">
+                                <input type="hidden" name="regenerate_api_key" value="<?php echo (int)$key['id']; ?>">
+                                <button type="submit" class="btn btn-sm btn-outline-warning me-1" title="Regenerate key"><i class="bi bi-arrow-repeat"></i></button>
+                              </form>
+                              <form method="post" style="display:inline;" onsubmit="return confirm('Delete this API key? This cannot be undone.');">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? '', ENT_QUOTES, 'UTF-8'); ?>">
+                                <input type="hidden" name="delete_api_key" value="<?php echo (int)$key['id']; ?>">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete key"><i class="bi bi-trash"></i></button>
+                              </form>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php else: ?>
+                  <p class="text-muted">No API keys yet. Create one to start using the API.</p>
+                <?php endif; ?>
+                
+                <?php if (count($user_api_keys) < $api_keys_per_user): ?>
+                  <form method="post" class="row g-2 align-items-end mt-3">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? '', ENT_QUOTES, 'UTF-8'); ?>">
+                    <div class="col-auto">
+                      <label class="form-label text-light">Key Name</label>
+                      <input type="text" name="key_name" class="form-control bg-dark text-light" placeholder="My Script" maxlength="100">
+                    </div>
+                    <div class="col-auto">
+                      <button type="submit" name="create_api_key" value="1" class="btn btn-outline-success">
+                        <i class="bi bi-plus"></i> Create API Key
+                      </button>
+                    </div>
+                  </form>
+                  <p class="text-muted small mt-2">You can create up to <?php echo $api_keys_per_user; ?> API keys.</p>
+                <?php else: ?>
+                  <p class="text-warning small">Maximum API keys reached. Delete one to create a new key.</p>
+                <?php endif; ?>
+              </div>
+            </div>
+            <?php endif; ?>
+
+            <div class="row justify-content-center">
+              <div class="col-md-6">
                   <hr class="my-4">
 
                   <div class="text-center">

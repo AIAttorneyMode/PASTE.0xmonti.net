@@ -85,6 +85,7 @@
                                             foreach ($pastes as $row) {
                                                 $title = trim((string) ($row['title'] ?? 'Untitled'));
                                                 $p_id = trim((string) ($row['id'] ?? ''));
+                                                $p_slug = trim((string) ($row['slug'] ?? ''));
                                                 $p_code = trim((string) ($row['code'] ?? 'text'));
                                                 $p_date = trim((string) ($row['date'] ?? ''));
                                                 $p_time = (int) ($row['now_time'] ?? 0);
@@ -93,9 +94,11 @@
                                                 // Use formatRealTime for absolute date from database date string
                                                 $p_time_display = formatRealTime($p_date);
                                                 $title = truncate($title, 20, 50);
+                                                // Use slug if available, otherwise fall back to numeric ID
+                                                $url_identifier = $p_slug !== '' ? $p_slug : $p_id;
                                                 $url = $mod_rewrite == '1' 
-                                                    ? htmlspecialchars($baseurl . '' . $p_id, ENT_QUOTES, 'UTF-8')
-                                                    : htmlspecialchars($baseurl . 'paste.php?id=' . $p_id, ENT_QUOTES, 'UTF-8');
+                                                    ? htmlspecialchars($baseurl . '' . $url_identifier, ENT_QUOTES, 'UTF-8')
+                                                    : htmlspecialchars($baseurl . 'paste.php?id=' . $url_identifier, ENT_QUOTES, 'UTF-8');
                                                 ?>
                                                 <tr>
                                                     <td><a href="<?php echo $url; ?>" title="<?php echo htmlspecialchars($title, ENT_QUOTES, 'UTF-8'); ?>" class="text-primary"><?php echo ucfirst(htmlspecialchars($title, ENT_QUOTES, 'UTF-8')); ?></a></td>

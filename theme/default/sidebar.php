@@ -52,17 +52,20 @@
                                     foreach ($pastes as $row) {
                                         $title = (string) ($row['title'] ?? 'Untitled');
                                         $p_id  = (string) ($row['id'] ?? '');
+                                        $p_slug = (string) ($row['slug'] ?? '');
                                         $p_time= (int) ($row['now_time'] ?? 0);
                                         $p_code= (string) ($row['code'] ?? 'Unknown');
                                         $p_time_ago = conTime($p_time);
                                         $title = truncate($title, 6, 15);
+                                        // Use slug if available, otherwise fall back to numeric ID
+                                        $url_identifier = $p_slug !== '' ? $p_slug : $p_id;
                                         // controller delete link (same for rewrite)
                                         $p_delete_link = "user.php?del&user=" . urlencode($username) . "&id=" . urlencode($p_id);
                                         ?>
                                         <div class="list-group-item d-flex justify-content-between align-items-center bg-dark text-light"
                                              id="paste-item-<?php echo htmlspecialchars($p_id, ENT_QUOTES, 'UTF-8'); ?>">
                                             <a href="<?php echo htmlspecialchars(
-                                                $baseurl . ($mod_rewrite ? $p_id : 'paste.php?id=' . $p_id),
+                                                $baseurl . ($mod_rewrite ? $url_identifier : 'paste.php?id=' . $url_identifier),
                                                 ENT_QUOTES,
                                                 'UTF-8'
                                             ); ?>" title="<?php echo htmlspecialchars($title, ENT_QUOTES, 'UTF-8'); ?>" class="text-light fw-medium text-decoration-none">
@@ -107,7 +110,7 @@
         </div>
     <?php endif; ?>
 
-    <?php if (!isset($privatesite) || $privatesite !== 'on'): ?>
+    <?php if ((!isset($privatesite) || $privatesite !== 'on') && (!isset($hiderecentpastes) || $hiderecentpastes !== 'on')): ?>
         <!-- Recent Public Pastes -->
         <div class="col-12">
             <div class="card mb-4">
@@ -125,14 +128,17 @@
                                 foreach ($pastes as $row) {
                                     $title = (string) ($row['title'] ?? 'Untitled');
                                     $p_id  = (string) ($row['id'] ?? '');
+                                    $p_slug = (string) ($row['slug'] ?? '');
                                     $p_time= (int) ($row['now_time'] ?? 0);
                                     $p_code= (string) ($row['code'] ?? 'Unknown');
                                     $p_time_ago = conTime($p_time);
                                     $title = truncate($title, 6, 15);
+                                    // Use slug if available, otherwise fall back to numeric ID
+                                    $url_identifier = $p_slug !== '' ? $p_slug : $p_id;
                                     ?>
                                     <div class="list-group-item d-flex justify-content-between align-items-center text-light">
                                         <a href="<?php echo htmlspecialchars(
-                                            $baseurl . ($mod_rewrite ? $p_id : 'paste.php?id=' . $p_id),
+                                            $baseurl . ($mod_rewrite ? $url_identifier : 'paste.php?id=' . $url_identifier),
                                             ENT_QUOTES,
                                             'UTF-8'
                                         ); ?>" title="<?php echo htmlspecialchars($title, ENT_QUOTES, 'UTF-8'); ?>" class="text-light fw-medium text-decoration-none">

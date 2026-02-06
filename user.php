@@ -1,6 +1,6 @@
 <?php
 /*
- * Paste $v3.3 2025/10/24 https://github.com/boxlabss/PASTE
+ * Paste $v3.4 2026/01/10 https://github.com/boxlabss/PASTE
  * demo: https://paste.boxlabs.uk/
  *
  * https://phpaste.sourceforge.io/
@@ -28,7 +28,7 @@ $ip   = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 
 global $pdo;
 
-// JSON response for ajax delete
+// JSON response for ajax
 function send_json($ok, $msg = '', $extra = []) {
     header_remove('Content-Type');
     header('Content-Type: application/json; charset=utf-8');
@@ -51,7 +51,7 @@ try {
     $gplus     = trim($si['gplus'] ?? '');
     $ga        = trim($si['ga'] ?? '');
     $additional_scripts = trim($si['additional_scripts'] ?? '');
-    $mod_rewrite = (string)($si['mod_rewrite'] ?? '1'); // used later
+    $mod_rewrite = (string)($si['mod_rewrite'] ?? '1');
 
     // interface
     $stmt = $pdo->query("SELECT * FROM interface WHERE id = '1'");
@@ -62,7 +62,6 @@ try {
 
     // ban check
     if (is_banned($pdo, $ip)) {
-        // ajax delete path?
         if (isset($_POST['ajax']) && $_POST['ajax'] === '1') {
             send_json(false, $lang['banned'] ?? 'You are banned from this site.');
         }
@@ -77,13 +76,9 @@ try {
         $privatesite = "1";
     }
 
-    // profile username
-    if (!isset($_GET['user'])) {
-        header("Location: ../");
-        exit;
-    }
-    $profile_username = trim($_GET['user']);
-    if (!existingUser($pdo, $profile_username)) {
+    // profile username required - accept from GET or POST
+    $profile_username = trim($_GET['user'] ?? $_POST['user'] ?? '');
+    if ($profile_username === '' || !existingUser($pdo, $profile_username)) {
         header("Location: ../");
         exit;
     }
@@ -91,41 +86,39 @@ try {
     $p_title = $profile_username . ($lang['user_public_pastes'] ?? 'Public Pastes');
     $is_me = (isset($_SESSION['username']) && $_SESSION['username'] === $profile_username);
 
-    // stats for profile page
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM pastes WHERE member = ?");
-    $stmt->execute([$profile_username]);
-    $profile_total_pastes = (int)$stmt->fetchColumn();
-
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM pastes WHERE member = ? AND visible = 0");
-    $stmt->execute([$profile_username]);
-    $profile_total_public = (int)$stmt->fetchColumn();
-
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM pastes WHERE member = ? AND visible = 1");
-    $stmt->execute([$profile_username]);
-    $profile_total_unlisted = (int)$stmt->fetchColumn();
-
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM pastes WHERE member = ? AND visible = 2");
-    $stmt->execute([$profile_username]);
-    $profile_total_private = (int)$stmt->fetchColumn();
-
+    // Get user info and all stats in ONE query
     $stmt = $pdo->prepare("
-        SELECT COALESCE(COUNT(pv.id), 0) AS total_views
+        SELECT 
+            u.id AS user_id,
+            u.date AS join_date,
+            COUNT(p.id) AS total_pastes,
+            SUM(CASE WHEN p.visible = 0 THEN 1 ELSE 0 END) AS total_public,
+            SUM(CASE WHEN p.visible = 1 THEN 1 ELSE 0 END) AS total_unlisted,
+            SUM(CASE WHEN p.visible = 2 THEN 1 ELSE 0 END) AS total_private
+        FROM users u
+        LEFT JOIN pastes p ON p.member = u.username
+        WHERE u.username = ?
+        GROUP BY u.id
+    ");
+    $stmt->execute([$profile_username]);
+    $stats = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    
+    $profile_user_id        = (int)($stats['user_id'] ?? 0);
+    $profile_join_date      = $stats['join_date'] ?? '';
+    $profile_total_pastes   = (int)($stats['total_pastes'] ?? 0);
+    $profile_total_public   = (int)($stats['total_public'] ?? 0);
+    $profile_total_unlisted = (int)($stats['total_unlisted'] ?? 0);
+    $profile_total_private  = (int)($stats['total_private'] ?? 0);
+
+    // Get total views separately
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(COUNT(pv.id), 0)
         FROM pastes p
         LEFT JOIN paste_views pv ON p.id = pv.paste_id
         WHERE p.member = ?
     ");
     $stmt->execute([$profile_username]);
     $profile_total_paste_views = (int)$stmt->fetchColumn();
-
-    $stmt = $pdo->prepare("SELECT id FROM users WHERE username = ?");
-    $stmt->execute([$profile_username]);
-    $profile_user_id = (int)($stmt->fetchColumn() ?: 0);
-
-    // Get joined date
-    $stmt = $pdo->prepare("SELECT date FROM users WHERE username = ?");
-    $stmt->execute([$profile_username]);
-    $profile_join_date = $stmt->fetchColumn();
-    $profile_join_date = is_string($profile_join_date) ? $profile_join_date : '';
 
     // logout
     if (isset($_GET['logout'])) {
@@ -136,7 +129,7 @@ try {
         exit;
     }
 
-    // page views
+    // page views tracking
     $view_date = date('Y-m-d');
     try {
         $stmt = $pdo->prepare("SELECT id, tpage, tvisit FROM page_view WHERE date = ?");
@@ -165,7 +158,19 @@ try {
         error_log("Page view tracking error: " . $e->getMessage());
     }
 
-    // AJAX: delete own comment
+    // get current user ID for ownership checks
+    $getCurrentUserId = function() use ($pdo) {
+        if (empty($_SESSION['username'])) return 0;
+        try {
+            $q = $pdo->prepare("SELECT id FROM users WHERE username = ?");
+            $q->execute([$_SESSION['username']]);
+            return (int)($q->fetchColumn() ?: 0);
+        } catch (Throwable $e) {
+            return 0;
+        }
+    };
+
+    // Delete comment (ajax)
     if (isset($_GET['action']) && $_GET['action'] === 'delete_comment') {
         if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST' || ($_POST['ajax'] ?? '') !== '1') {
             send_json(false, 'Bad request.');
@@ -176,19 +181,14 @@ try {
         if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'] ?? '', (string)$_POST['csrf_token'])) {
             send_json(false, $lang['invalidtoken'] ?? 'Invalid CSRF token.');
         }
+        
         $comment_id = (int)($_POST['comment_id'] ?? 0);
-        if ($comment_id <= 0) send_json(false, 'Invalid comment.');
+        if ($comment_id <= 0) {
+            send_json(false, 'Invalid comment.');
+        }
 
-        // current user
-        $owner = (string)$_SESSION['username'];
-        $uid = 0;
-        try {
-            $q = $pdo->prepare("SELECT id FROM users WHERE username = ?");
-            $q->execute([$owner]);
-            $uid = (int)($q->fetchColumn() ?: 0);
-        } catch (Throwable $e) { $uid = 0; }
-
-        if (!userOwnsComment($pdo, $comment_id, $uid, $owner)) {
+        $uid = $getCurrentUserId();
+        if (!userOwnsComment($pdo, $comment_id, $uid, $_SESSION['username'])) {
             send_json(false, $lang['delete_error_invalid'] ?? 'Not allowed.');
         }
         if (!deleteComment($pdo, $comment_id)) {
@@ -197,46 +197,57 @@ try {
         send_json(true, $lang['deleted'] ?? 'Deleted.', ['id' => $comment_id]);
     }
 
-    // Non-AJAX: delete own comment from profile
+    // Delete comment
     if ($_SERVER['REQUEST_METHOD'] === 'POST'
         && isset($_POST['action']) && $_POST['action'] === 'delete_comment') {
 
-        $redir = $baseurl . ($mod_rewrite ? 'user/' . rawurlencode($profile_username)
+        $is_ajax = (
+            (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest')
+            || (isset($_POST['ajax']) && $_POST['ajax'] === '1')
+        );
+
+        $redir = $baseurl . ($mod_rewrite === '1' ? 'user/' . rawurlencode($profile_username)
                                           : 'user.php?user=' . rawurlencode($profile_username));
-        $goto  = $redir . (strpos($redir, '?') === false ? '?':'&');
+        $goto  = $redir . (strpos($redir, '?') === false ? '?' : '&');
 
         do {
             if (empty($_SESSION['username']) || $_SESSION['username'] !== $profile_username) {
                 $msg = $lang['not_logged_in'] ?? 'You must be logged in.';
+                if ($is_ajax) { send_json(false, $msg); }
                 header('Location: ' . $goto . 'c_err=' . rawurlencode($msg) . '#my-comments'); exit;
             }
             if (empty($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'] ?? '', (string)$_POST['csrf_token'])) {
                 $msg = $lang['invalidtoken'] ?? 'Invalid CSRF token.';
+                if ($is_ajax) { send_json(false, $msg); }
                 header('Location: ' . $goto . 'c_err=' . rawurlencode($msg) . '#my-comments'); exit;
             }
             $cid = (int)($_POST['comment_id'] ?? 0);
             if ($cid <= 0) {
-                header('Location: ' . $goto . 'c_err=' . rawurlencode('Invalid comment.') . '#my-comments'); exit;
+                $msg = 'Invalid comment.';
+                if ($is_ajax) { send_json(false, $msg); }
+                header('Location: ' . $goto . 'c_err=' . rawurlencode($msg) . '#my-comments'); exit;
             }
 
-            // resolve current user id for ownership check
-            $uid = (int)($profile_user_id ?? 0);
+            $uid = $getCurrentUserId();
             if (!userOwnsComment($pdo, $cid, $uid, $profile_username)) {
                 $msg = $lang['delete_error_invalid'] ?? 'Not allowed.';
+                if ($is_ajax) { send_json(false, $msg); }
                 header('Location: ' . $goto . 'c_err=' . rawurlencode($msg) . '#my-comments'); exit;
             }
 
             if (!deleteComment($pdo, $cid)) {
                 $msg = $lang['wentwrong'] ?? 'Failed to delete comment.';
+                if ($is_ajax) { send_json(false, $msg); }
                 header('Location: ' . $goto . 'c_err=' . rawurlencode($msg) . '#my-comments'); exit;
             }
 
             $msg = $lang['deleted'] ?? 'Comment deleted.';
+            if ($is_ajax) { send_json(true, $msg, ['id' => $cid]); }
             header('Location: ' . $goto . 'c_ok=' . rawurlencode($msg) . '#my-comments'); exit;
         } while (false);
     }
 
-    // DELETE paste (supports AJAX via POST ajax=1 and anchor GET fallback)
+    // Delete a paste
     if (isset($_GET['del'])) {
         $is_ajax = (isset($_POST['ajax']) && $_POST['ajax'] === '1');
 
@@ -262,7 +273,7 @@ try {
                     // perform delete
                     $stmt = $pdo->prepare("DELETE FROM pastes WHERE id = ? AND member = ?");
                     $stmt->execute([$paste_id, $owner]);
-                    // also clean up views (optional)
+                    // also clean up views
                     try {
                         $stmt = $pdo->prepare("DELETE FROM paste_views WHERE paste_id = ?");
                         $stmt->execute([$paste_id]);
@@ -273,151 +284,97 @@ try {
                         send_json(true, $lang['pastedeleted'] ?? 'Paste deleted successfully.', ['id' => $paste_id]);
                     }
                     $success = $lang['pastedeleted'] ?? 'Paste deleted successfully.';
-                    // redirect for non-ajax
-                    $redirect = $baseurl . ($mod_rewrite ? 'user/' . urlencode($owner) : 'user.php?user=' . urlencode($owner));
+                    $redirect = $baseurl . ($mod_rewrite === '1' ? 'user/' . urlencode($owner) : 'user.php?user=' . urlencode($owner));
                     header('Location: ' . $redirect);
                     exit;
                 }
             }
         }
-        // if we reach here and not ajax, fall through to render page with $error
     }
 
-    // ---------- PASTES PAGINATION ----------
-    // Visitors see only visible=0 (public)
-    $per_default = 25;
-    $per_max     = 100;
-    $per = isset($_GET['per']) ? (int)$_GET['per'] : $per_default;
-    if ($per < 5)   $per = 5;
-    if ($per > $per_max) $per = $per_max;
-    $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+    // Pagination for pastes
+    $per  = max(5, min(100, (int)($_GET['per'] ?? 25)));
+    $page = max(1, (int)($_GET['page'] ?? 1));
 
-    // Count (filtered by permission)
-    try {
-        $sqlCount = "SELECT COUNT(*) FROM pastes WHERE member = ?" . ($is_me ? "" : " AND visible = 0");
-        $stmt = $pdo->prepare($sqlCount);
-        $stmt->execute([$profile_username]);
-        $total_pastes = (int)$stmt->fetchColumn();
-    } catch (Throwable $e) {
-        $total_pastes = 0;
-    }
+    // Visibility filter: owner sees all; others see public only
+    $vis_sql = $is_me ? '' : ' AND p.visible = 0';
 
-    $total_pages = max(1, (int)ceil($total_pastes / ($per ?: 1)));
-    $page        = min($page, $total_pages);
-    $offset      = ($page - 1) * $per;
+    // Count total
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM pastes p WHERE p.member = ?" . $vis_sql);
+    $stmt->execute([$profile_username]);
+    $total_pastes = (int)$stmt->fetchColumn();
 
-    // Fetch one page
-    try {
-        $sqlRows = "
-            SELECT id, title, code, date, views, visible
-            FROM pastes
-            WHERE member = ?" . ($is_me ? "" : " AND visible = 0") . "
-            ORDER BY date DESC
-            LIMIT :offset, :limit
-        ";
-        $stmt = $pdo->prepare($sqlRows);
-        $stmt->bindValue(1, $profile_username, PDO::PARAM_STR);
-        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
-        $stmt->bindValue(':limit',  $per,    PDO::PARAM_INT);
-        $stmt->execute();
-        $pastes_page = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-    } catch (Throwable $e) {
-        $pastes_page = [];
-    }
+    $total_pages = max(1, (int)ceil($total_pastes / $per));
+    $page = min($page, $total_pages);
+    $offset = ($page - 1) * $per;
 
-    // Range text for "showing X–Y of Z"
+    // Fetch pastes with views count in one query
+    $stmt = $pdo->prepare("
+        SELECT 
+            p.id, p.slug, p.title, p.code, p.date, p.visible,
+            COALESCE(v.view_count, 0) AS views
+        FROM pastes p
+        LEFT JOIN (
+            SELECT paste_id, COUNT(*) AS view_count
+            FROM paste_views
+            GROUP BY paste_id
+        ) v ON v.paste_id = p.id
+        WHERE p.member = ?
+        $vis_sql
+        ORDER BY p.date DESC
+        LIMIT ? OFFSET ?
+    ");
+    $stmt->execute([$profile_username, $per, $offset]);
+    $pastesPage = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    // Range text
     $range_from = $total_pastes ? ($offset + 1) : 0;
-    $range_to   = min($offset + $per, $total_pastes);
+    $range_to   = min($offset + count($pastesPage), $total_pastes);
 
-    // small URL builder for the profile (works with/without mod_rewrite)
+    // URL builder for pagination
     $profile_url = function(array $add = [], array $drop = []) use ($baseurl, $mod_rewrite, $profile_username) {
-        $base = $baseurl . ($mod_rewrite ? ('user/' . rawurlencode($profile_username)) : ('user.php?user=' . rawurlencode($profile_username)));
-        // merge current query with $add, drop keys in $drop
+        $base = $baseurl . ($mod_rewrite === '1' ? ('user/' . rawurlencode($profile_username)) : ('user.php?user=' . rawurlencode($profile_username)));
         $q = $_GET;
         foreach ($drop as $k) unset($q[$k]);
         foreach ($add as $k => $v) {
             if ($v === null) unset($q[$k]); else $q[$k] = $v;
         }
         $qs = http_build_query($q);
-        return $base . ($mod_rewrite ? ($qs ? ('?' . $qs) : '') : ($qs ? ('&' . $qs) : ''));
+        return $base . ($mod_rewrite === '1' ? ($qs ? ('?' . $qs) : '') : ($qs ? ('&' . $qs) : ''));
     };
 
-    // ---------- USER COMMENTS ----------
+    // User comments
     $stmt = $pdo->query("SELECT * FROM ads WHERE id = '1'");
     $ads  = $stmt->fetch() ?: [];
     $text_ads = trim($ads['text_ads'] ?? '');
     $ads_1    = trim($ads['ads_1'] ?? '');
     $ads_2    = trim($ads['ads_2'] ?? '');
 
-    // Build comments list for this profile (latest first)
-    $owner_viewing = $is_me;
-    $vis_sql = $owner_viewing ? '' : ' AND p.visible IN (0,1) ';
+    // Comments: owner sees all, others see public+unlisted pastes only
+    $vis_comment_sql = $is_me ? '' : ' AND p.visible IN (0,1)';
 
-    $st = $pdo->prepare("
+    $stmt = $pdo->prepare("
         SELECT c.id, c.paste_id, c.user_id, c.username, c.body, c.created_at,
-               p.title, p.visible
+               p.title, p.visible, p.slug AS paste_slug
         FROM paste_comments c
         JOIN pastes p ON p.id = c.paste_id
         WHERE (c.user_id = :uid OR c.username = :uname)
-              $vis_sql
+              $vis_comment_sql
         ORDER BY c.created_at DESC
         LIMIT 200
     ");
-    $st->execute([
-        ':uid'   => (int)($profile_user_id ?? 0),
+    $stmt->execute([
+        ':uid'   => $profile_user_id,
         ':uname' => $profile_username
     ]);
-    $user_comments = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
-    $total_user_comments = (int)count($user_comments);
-	
-	// ----- pagination + data for the table ---------------------------------
-	$is_owner = (isset($_SESSION['username']) && $_SESSION['username'] === $profile_username);
+    $user_comments = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $total_user_comments = count($user_comments);
 
-	// page size & offset
-	$per  = max(1, min(100, (int)($_GET['per'] ?? 25)));
-	$page = max(1, (int)($_GET['page'] ?? 1));
-	$off  = ($page - 1) * $per;
-
-	// visibility filter: owner sees all; others see public + unlisted
-	$vis_list = $is_owner ? '0,1,2' : '0,1';
-
-	// total rows (for pager)
-	$stmt = $pdo->prepare("SELECT COUNT(*) FROM pastes WHERE member = :member AND visible IN ($vis_list)");
-	$stmt->execute([':member' => $profile_username]);
-	$total_pastes = (int)$stmt->fetchColumn();
-
-	// current page rows
-	$sql = "
-	  SELECT
-		p.id,
-		p.title,
-		p.code,
-		p.`date`,
-		p.visible,
-		COALESCE(v.view_count, 0) AS views
-	  FROM pastes p
-	  LEFT JOIN (
-		SELECT paste_id, COUNT(*) AS view_count
-		FROM paste_views
-		GROUP BY paste_id
-	  ) v ON v.paste_id = p.id
-	  WHERE p.member = :member
-		AND p.visible IN ($vis_list)
-	  ORDER BY p.`date` DESC
-	  LIMIT " . (int)$per . " OFFSET " . (int)$off;
-
-	$stmt = $pdo->prepare($sql);
-	$stmt->execute([':member' => $profile_username]);
-	$pastesPage = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
-	// range info for "Showing X–Y of Z"
-	$range_from = $total_pastes ? ($off + 1) : 0;
-	$range_to   = min($total_pastes, $off + count($pastesPage));
-
-    // theme
+    // render
     require_once('theme/' . htmlspecialchars($default_theme, ENT_QUOTES, 'UTF-8') . '/header.php');
     require_once('theme/' . htmlspecialchars($default_theme, ENT_QUOTES, 'UTF-8') . '/user_profile.php');
     require_once('theme/' . htmlspecialchars($default_theme, ENT_QUOTES, 'UTF-8') . '/footer.php');
+
 } catch (PDOException $e) {
     die("Database error: " . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8'));
 }

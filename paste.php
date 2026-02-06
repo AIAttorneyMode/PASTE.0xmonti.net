@@ -1,6 +1,6 @@
 <?php
 /*
- * Paste $v3.3 2025/10/24 https://github.com/boxlabss/PASTE
+ * Paste $v3.4 2026/01/20 https://github.com/boxlabss/PASTE
  * demo: https://paste.boxlabs.uk/
  *
  * https://phpaste.sourceforge.io/
@@ -270,10 +270,22 @@ function render_password_required_and_exit(string $msg): void {
 // --- Inputs ---
 $p_password = '';
 $paste_id   = null;
+$paste_identifier = ''; // Can be numeric ID or slug
+$accessed_by_numeric_id = false;
+
 if (isset($_GET['id']) && $_GET['id'] !== '') {
-    $paste_id = (int) trim((string) $_GET['id']);
+    $paste_identifier = trim((string) $_GET['id']);
+    // For backwards compatibility, also set paste_id if numeric
+    if (ctype_digit($paste_identifier)) {
+        $paste_id = (int) $paste_identifier;
+        $accessed_by_numeric_id = true;
+    }
 } elseif (isset($_POST['id']) && $_POST['id'] !== '') {
-    $paste_id = (int) trim((string) $_POST['id']);
+    $paste_identifier = trim((string) $_POST['id']);
+    if (ctype_digit($paste_identifier)) {
+        $paste_id = (int) $paste_identifier;
+        $accessed_by_numeric_id = true;
+    }
 }
 
 try {
@@ -315,6 +327,7 @@ try {
     $perm = $stmt->fetch() ?: [];
     $disableguest = trim($perm['disableguest'] ?? 'off');
     $siteprivate  = trim($perm['siteprivate'] ?? 'off');
+    $hiderecentpastes = trim($perm['hiderecentpastes'] ?? 'off');
     if ($_SERVER['REQUEST_METHOD'] !== 'POST' && $siteprivate === "on") {
         $privatesite = "on";
     }
@@ -356,18 +369,37 @@ try {
     $ads_1    = trim($ads['ads_1'] ?? '');
     $ads_2    = trim($ads['ads_2'] ?? '');
 
-    // Guard ID
-    if (!$paste_id) {
+    // Guard ID/Slug
+    if (!$paste_identifier && !$paste_id) {
         render_error_and_exit($lang['notfound'] ?? 'Paste not found.');
     }
 
-    // load paste
-    $stmt = $pdo->prepare("SELECT * FROM pastes WHERE id = ?");
-    $stmt->execute([$paste_id]);
-    if ($stmt->rowCount() === 0) {
+    // Check if numeric URL access should be blocked
+    if ($accessed_by_numeric_id && shouldBlockNumericUrls($pdo)) {
+        // Numeric URL access is blocked - show 404 regardless of whether paste exists
+        render_error_and_exit($lang['notfound'] ?? 'Paste not found.', '404');
+    }
+
+    // load paste - supports both numeric ID and slug
+    $row = null;
+    if ($paste_identifier !== '') {
+        $row = getPasteByIdentifier($pdo, $paste_identifier);
+    } elseif ($paste_id) {
+        $stmt = $pdo->prepare("SELECT * FROM pastes WHERE id = ?");
+        $stmt->execute([$paste_id]);
+        $row = $stmt->fetch() ?: null;
+    }
+    
+    if (!$row) {
         render_error_and_exit($lang['notfound'] ?? 'Paste not found.');
     }
-    $row = $stmt->fetch();
+    
+    // Set paste_id from row for backwards compatibility
+    $paste_id = (int) $row['id'];
+    $p_slug = (string) ($row['slug'] ?? '');
+    
+    // Determine the identifier to use in URLs (prefer slug if available)
+    $url_identifier = ($p_slug !== '') ? $p_slug : $paste_id;
 
     // paste fields
     $p_title    = (string) ($row['title'] ?? '');
@@ -380,6 +412,40 @@ try {
     $p_date     = (string) ($row['date'] ?? '');
     $p_encrypt  = (string) ($row['encrypt'] ?? '0');
     $p_views    = getPasteViewCount($pdo, (int) $paste_id);
+    $p_parent_id = isset($row['parent_id']) && $row['parent_id'] ? (int) $row['parent_id'] : null;
+    
+    // Load parent paste info for diff link (if this is a fork)
+    $parent_paste = null;
+    $parent_url = null;
+    if ($p_parent_id && $p_parent_id > 0) {
+        try {
+            $stmt = $pdo->prepare("SELECT id, slug, title FROM pastes WHERE id = ?");
+            $stmt->execute([$p_parent_id]);
+            $parent_paste = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($parent_paste) {
+                $parent_identifier = !empty($parent_paste['slug']) ? $parent_paste['slug'] : $parent_paste['id'];
+                $parent_url = ($mod_rewrite == '1') ? $baseurl . $parent_identifier : $baseurl . 'paste.php?id=' . $parent_identifier;
+            }
+        } catch (PDOException $e) {
+            error_log("paste.php: Error loading parent paste: " . $e->getMessage());
+        }
+    }
+    
+    // Check if this paste has any forks (children)
+    $child_pastes = [];
+    try {
+        // First check if parent_id column exists
+        $hasParentCol = columnExists($pdo, 'pastes', 'parent_id');
+        error_log("paste.php: Checking for forks of paste_id=$paste_id, hasParentCol=" . ($hasParentCol ? 'true' : 'false'));
+        if ($hasParentCol) {
+            $stmt = $pdo->prepare("SELECT id, slug, title, member, date FROM pastes WHERE parent_id = ? ORDER BY date DESC LIMIT 10");
+            $stmt->execute([$paste_id]);
+            $child_pastes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            error_log("paste.php: Found " . count($child_pastes) . " forks for paste_id=$paste_id");
+        }
+    } catch (PDOException $e) {
+        error_log("paste.php: Error loading child pastes: " . $e->getMessage());
+    }
 
     // ---- comments config for view (AFTER $p_password is known) ----
     // Read site-wide flags from config.php (with safe defaults)
@@ -785,10 +851,11 @@ try {
             }
 
             if ($okId) {
-                // Avoid resubmit on refresh
+                // Avoid resubmit on refresh - use slug if available
+                $redirect_ident = ($p_slug !== '') ? $p_slug : $paste_id;
                 $to = ($mod_rewrite == '1')
-                    ? $baseurl . $paste_id . '#comments'
-                    : $baseurl . 'paste.php?id=' . (int)$paste_id . '#comments';
+                    ? $baseurl . rawurlencode((string)$redirect_ident) . '#comments'
+                    : $baseurl . 'paste.php?id=' . rawurlencode((string)$redirect_ident) . '#comments';
                 header('Location: ' . $to);
                 exit;
             }
@@ -855,9 +922,10 @@ try {
 		}
 
 		// Redirect back to #comments (PRG). If error, carry as c_err=
+		$redirect_ident = ($p_slug !== '') ? $p_slug : $paste_id;
 		$to = ($mod_rewrite == '1')
-			? $baseurl . (int)$paste_id . '#comments'
-			: $baseurl . 'paste.php?id=' . (int)$paste_id . '#comments';
+			? $baseurl . rawurlencode((string)$redirect_ident) . '#comments'
+			: $baseurl . 'paste.php?id=' . rawurlencode((string)$redirect_ident) . '#comments';
         if ($err !== '') {
             $to .= (strpos($to, '?') === false ? '?' : '&') . 'c_err=' . rawurlencode($err);
         }
@@ -918,9 +986,9 @@ try {
     if ($p_password === "NONE") {
         updateMyView($pdo, (int) $paste_id);
 
-        $p_download = $mod_rewrite == '1' ? $baseurl . "download/$paste_id" : $baseurl . "paste.php?download&id=$paste_id";
-        $p_raw      = $mod_rewrite == '1' ? $baseurl . "raw/$paste_id"      : $baseurl . "paste.php?raw&id=$paste_id";
-        $p_embed    = $mod_rewrite == '1' ? $baseurl . "embed/$paste_id"    : $baseurl . "paste.php?embed&id=$paste_id";
+        $p_download = $mod_rewrite == '1' ? $baseurl . "download/$url_identifier" : $baseurl . "paste.php?download&id=$url_identifier";
+        $p_raw      = $mod_rewrite == '1' ? $baseurl . "raw/$url_identifier"      : $baseurl . "paste.php?raw&id=$url_identifier";
+        $p_embed    = $mod_rewrite == '1' ? $baseurl . "embed/$url_identifier"    : $baseurl . "paste.php?embed&id=$url_identifier";
 
         require_once $theme . '/view.php';
 
@@ -939,14 +1007,14 @@ try {
 
         // Prebuild convenience links that carry the typed password
         $p_download = $mod_rewrite == '1'
-            ? $baseurl . "download/$paste_id?password=" . rawurlencode($p_password_input)
-            : $baseurl . "paste.php?download&id=$paste_id&password=" . rawurlencode($p_password_input);
+            ? $baseurl . "download/$url_identifier?password=" . rawurlencode($p_password_input)
+            : $baseurl . "paste.php?download&id=$url_identifier&password=" . rawurlencode($p_password_input);
         $p_raw = $mod_rewrite == '1'
-            ? $baseurl . "raw/$paste_id?password=" . rawurlencode($p_password_input)
-            : $baseurl . "paste.php?raw&id=$paste_id&password=" . rawurlencode($p_password_input);
+            ? $baseurl . "raw/$url_identifier?password=" . rawurlencode($p_password_input)
+            : $baseurl . "paste.php?raw&id=$url_identifier&password=" . rawurlencode($p_password_input);
         $p_embed = $mod_rewrite == '1'
-            ? $baseurl . "embed/$paste_id?password=" . rawurlencode($p_password_input)
-            : $baseurl . "paste.php?embed&id=$paste_id&password=" . rawurlencode($p_password_input);
+            ? $baseurl . "embed/$url_identifier?password=" . rawurlencode($p_password_input)
+            : $baseurl . "paste.php?embed&id=$url_identifier&password=" . rawurlencode($p_password_input);
 
         if ($p_password_input !== '' && password_verify($p_password_input, $p_password)) {
             updateMyView($pdo, (int) $paste_id);

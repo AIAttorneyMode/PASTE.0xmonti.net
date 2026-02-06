@@ -833,11 +833,18 @@ document.addEventListener('DOMContentLoaded', function () {
 
     ev.preventDefault();
 
+    // Find the comment item (works on paste view page)
     var li = form.closest ? form.closest('.comment-item') : null;
+    // Find table row (works on user profile page)
+    var tr = form.closest ? form.closest('tr') : null;
+    
     var fd = new FormData(form);
     fd.set('ajax', '1');
 
-    fetch(form.action, {
+    // Use getAttribute to avoid shadowing by input[name="action"]
+    var formAction = form.getAttribute('action') || window.location.href;
+
+    fetch(formAction, {
       method: 'POST',
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
       body: fd,
@@ -846,11 +853,30 @@ document.addEventListener('DOMContentLoaded', function () {
       .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
       .then(function (j) {
         if (j && j.success) {
-          if (li && li.parentNode) li.parentNode.removeChild(li);
-          var badge = document.getElementById('comments-count');
-          if (badge) {
-            var n = parseInt(badge.textContent || '0', 10) || 0;
-            badge.textContent = Math.max(0, n - 1);
+          // On paste view: remove comment item and update badge
+          if (li && li.parentNode) {
+            li.parentNode.removeChild(li);
+            var badge = document.getElementById('comments-count');
+            if (badge) {
+              var n = parseInt(badge.textContent || '0', 10) || 0;
+              badge.textContent = Math.max(0, n - 1);
+            }
+            showNotification(j.message || 'Comment deleted.');
+          }
+          // On user profile: remove table row and update badge
+          else if (tr && tr.parentNode) {
+            tr.parentNode.removeChild(tr);
+            // Update the comments count badge in the card header
+            var headerBadge = document.querySelector('#my-comments .badge');
+            if (headerBadge) {
+              var n = parseInt(headerBadge.textContent || '0', 10) || 0;
+              headerBadge.textContent = Math.max(0, n - 1);
+            }
+            showNotification(j.message || 'Comment deleted.');
+          }
+          // Fallback: reload page
+          else {
+            window.location.reload();
           }
         } else {
           showNotification((j && j.message) ? j.message : 'Delete failed.', true);

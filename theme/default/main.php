@@ -1,6 +1,6 @@
 <?php
 /*
- * Paste $v3.3 2025/10/24 https://github.com/boxlabss/PASTE
+ * Paste $v3.4 2026/02/04 https://github.com/boxlabss/PASTE
  * demo: https://paste.boxlabs.uk/
  *
  * https://phpaste.sourceforge.io/
@@ -220,7 +220,7 @@ $main_sitekey = $_SESSION['captcha'] ?? ''; // sitekey for this main form (set i
     <?php else: ?>
       <!-- Non-private site: Main content + sidebar -->
       <div class="col-lg-10">
-        <?php if (!isset($_SESSION['username']) && (!isset($privatesite) || $privatesite != "on")): ?>
+        <?php if (!isset($_SESSION['username']) && (!isset($privatesite) || $privatesite != "on") && $devmode == '1'): ?>
           <div class="card guest-welcome text-center">
             <div class="btn-group" role="group" aria-label="Download Paste">
               <a href="https://sourceforge.net/projects/phpaste/files/latest/download" class="btn btn-success">Get Paste <?=$currentversion?></a>

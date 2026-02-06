@@ -29,11 +29,15 @@ $show_pw = isset($require_password) && $require_password === true;
 
 // Build rewrite-aware action for the password form
 $pw_action_url = '';
-if ($show_pw && isset($paste_id) && $paste_id !== '') {
-    if (isset($mod_rewrite) && $mod_rewrite == '1') {
-        $pw_action_url = rtrim((string)$baseurl, '/') . '/' . rawurlencode((string)$paste_id);
-    } else {
-        $pw_action_url = rtrim((string)$baseurl, '/') . '/paste.php?id=' . rawurlencode((string)$paste_id);
+if ($show_pw && (isset($paste_id) || isset($url_identifier))) {
+    // Prefer url_identifier (slug) over numeric paste_id
+    $form_identifier = isset($url_identifier) && $url_identifier !== '' ? $url_identifier : (isset($paste_id) ? $paste_id : '');
+    if ($form_identifier !== '') {
+        if (isset($mod_rewrite) && $mod_rewrite == '1') {
+            $pw_action_url = rtrim((string)$baseurl, '/') . '/' . rawurlencode((string)$form_identifier);
+        } else {
+            $pw_action_url = rtrim((string)$baseurl, '/') . '/paste.php?id=' . rawurlencode((string)$form_identifier);
+        }
     }
 }
 
@@ -75,7 +79,7 @@ $generic_msg = $notfound ?? ($error ?? ($error_msg ?? ($lang['error'] ?? 'An err
               <?php endif; ?>
               <div class="card-body">
                 <form action="<?php echo htmlspecialchars($pw_action_url ?: $_SERVER['PHP_SELF'], ENT_QUOTES, 'UTF-8'); ?>" method="post" class="text-center">
-                  <input type="hidden" name="id" value="<?php echo isset($paste_id) ? htmlspecialchars((string)$paste_id, ENT_QUOTES, 'UTF-8') : ''; ?>">
+                  <input type="hidden" name="id" value="<?php echo htmlspecialchars((string)($form_identifier ?? $paste_id ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
                   <div class="input-group w-50 mx-auto mb-3">
                     <span class="input-group-text"><i class="bi bi-unlock"></i></span>
                     <input type="text" class="form-control" name="mypass" placeholder="<?php echo htmlspecialchars($lang['enterpwd'] ?? 'Enter Password', ENT_QUOTES, 'UTF-8'); ?>">
@@ -123,7 +127,7 @@ $generic_msg = $notfound ?? ($error ?? ($error_msg ?? ($lang['error'] ?? 'An err
               <?php endif; ?>
               <div class="card-body">
                 <form action="<?php echo htmlspecialchars($pw_action_url ?: $_SERVER['PHP_SELF'], ENT_QUOTES, 'UTF-8'); ?>" method="post" class="text-center">
-                  <input type="hidden" name="id" value="<?php echo isset($paste_id) ? htmlspecialchars((string)$paste_id, ENT_QUOTES, 'UTF-8') : ''; ?>">
+                  <input type="hidden" name="id" value="<?php echo htmlspecialchars((string)($form_identifier ?? $paste_id ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
                   <div class="input-group w-50 mx-auto mb-3">
                     <span class="input-group-text"><i class="bi bi-unlock"></i></span>
                     <input type="text" class="form-control" name="mypass" placeholder="<?php echo htmlspecialchars($lang['enterpwd'] ?? 'Enter Password', ENT_QUOTES, 'UTF-8'); ?>">

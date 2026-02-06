@@ -67,18 +67,33 @@ $(document).ready(function() {
             method: 'POST',
             data: $(this).serialize(),
             dataType: 'json',
+            timeout: 300000, // 5 minute timeout
             success: function(response) {
                 console.log('install.php response:', response);
                 $('#pre_load').hide();
                 $('#logpanel').show();
-                $('#log').html(response.message);
+                if (response.status === 'success') {
+                    $('#log').html('<div class="alert alert-success">' + response.message + '</div>');
+                } else {
+                    $('#log').html('<div class="alert alert-danger">' + (response.message || 'Unknown error') + '</div>');
+                }
             },
             error: function(xhr, status, error) {
                 console.error('install.php AJAX error:', status, error, xhr.responseText);
                 $('#pre_load').hide();
                 $('#configure').show();
                 $('#admin-alertfailed').show();
-                $('#admin-error-details').text('Error admin setup failed: ' + (xhr.responseJSON && xhr.responseJSON.message ? xhr.responseJSON.message : status + ' - ' + error));
+                var msg = 'Installation failed: ';
+                if (status === 'timeout') {
+                    msg += 'Request timed out. The installation may still be running - check your error logs.';
+                } else if (xhr.responseJSON && xhr.responseJSON.message) {
+                    msg += xhr.responseJSON.message;
+                } else if (xhr.responseText) {
+                    msg += xhr.responseText.substring(0, 500);
+                } else {
+                    msg += status + ' - ' + error;
+                }
+                $('#admin-error-details').text(msg);
             }
         });
     });

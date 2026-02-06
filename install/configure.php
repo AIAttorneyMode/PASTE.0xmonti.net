@@ -1,6 +1,6 @@
 <?php
 /*
- * Paste $v3.3 2025/10/24 https://github.com/boxlabss/PASTE
+ * Paste Installer $v3.4 https://github.com/boxlabss/PASTE
  * demo: https://paste.boxlabs.uk/
  *
  * https://phpaste.sourceforge.io/
@@ -90,17 +90,6 @@ try {
     exit;
 }
 
-// Generate random key
-try {
-    $sec_key = bin2hex(random_bytes(32));
-    error_log("configure.php: Generated random key");
-} catch (Exception $e) {
-    ob_end_clean();
-    error_log("configure.php: Failed to generate random key: " . $e->getMessage());
-    echo json_encode(['status' => 'error', 'message' => 'Failed to generate random key: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8')]);
-    exit;
-}
-
 // Calculate redirect URI for OAuth
 $protocol  = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https://" : "http://";
 $host      = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'];
@@ -143,8 +132,94 @@ $group_name = static function (string $path): string {
     return (string)$st['gid'];
 };
 
-// If config.php exists, require it to be writable; else require its directory be writable
+// Check for existing config.php and extract preserved settings
+$existing_sec_key = null;
+$existing_mod_rewrite = '0';
+$existing_highlighter = 'highlight';
+$existing_hl_style = 'hybrid.css';
+$existing_comments_enabled = true;
+$existing_comments_require_login = true;
+$existing_comments_on_protected = false;
+$existing_version = null;
+$is_upgrade = false;
+
+// OAuth settings to preserve
+$existing_g_client_id = '';
+$existing_g_client_secret = '';
+$existing_g_redirect_uri = '';
+$existing_g_application_name = 'Paste';
+
 if (file_exists($config_file)) {
+    // Read existing config to preserve settings
+    $existing_content = @file_get_contents($config_file);
+    error_log("configure.php: Found existing config.php, length: " . ($existing_content !== false ? strlen($existing_content) : 'read failed'));
+    if ($existing_content !== false) {
+        // Extract version
+        if (preg_match('/\$currentversion\s*=\s*["\']?([0-9.]+)["\']?/', $existing_content, $m)) {
+            $existing_version = (float)$m[1];
+            if ($existing_version < 3.4) {
+                $is_upgrade = true;
+            }
+        }
+        // Extract sec_key (preserve existing encryption key!)
+        // Supports: $sec_key = "abc123"; or $sec_key = 'abc123'; or $sec_key = abc123;
+        if (preg_match('/\$sec_key\s*=\s*["\']?([a-f0-9]{64})["\']?\s*;/', $existing_content, $m)) {
+            $existing_sec_key = $m[1];
+            error_log("configure.php: Preserving existing sec_key: " . substr($m[1], 0, 8) . "...");
+        } elseif (preg_match("/define\s*\(\s*['\"]SECRET['\"]\s*,\s*['\"]([a-f0-9]{64})['\"]\s*\)/", $existing_content, $m)) {
+            // Fallback: try to get from define('SECRET', 'xxx')
+            $existing_sec_key = $m[1];
+            error_log("configure.php: Preserving existing sec_key from SECRET define: " . substr($m[1], 0, 8) . "...");
+        }
+        // Extract mod_rewrite
+        // Supports: $mod_rewrite = "1"; or $mod_rewrite = '1'; or $mod_rewrite = 1;
+        if (preg_match('/\$mod_rewrite\s*=\s*["\']?([01])["\']?\s*;/', $existing_content, $m)) {
+            $existing_mod_rewrite = $m[1];
+            error_log("configure.php: Preserving existing mod_rewrite: " . $m[1]);
+        }
+        // Extract highlighter
+        if (preg_match('/\$highlighter\s*=.*["\']?(highlight|geshi)["\']?/', $existing_content, $m)) {
+            $existing_highlighter = $m[1];
+        }
+        // Extract hl_style
+        if (preg_match('/\$hl_style\s*=\s*["\']([^"\']+)["\']/', $existing_content, $m)) {
+            $existing_hl_style = $m[1];
+        }
+        // Extract comment settings
+        if (preg_match('/\$comments_enabled\s*=\s*(true|false)/', $existing_content, $m)) {
+            $existing_comments_enabled = $m[1] === 'true';
+        }
+        if (preg_match('/\$comments_require_login\s*=\s*(true|false)/', $existing_content, $m)) {
+            $existing_comments_require_login = $m[1] === 'true';
+        }
+        if (preg_match('/\$comments_on_protected\s*=\s*(true|false)/', $existing_content, $m)) {
+            $existing_comments_on_protected = $m[1] === 'true';
+        }
+        // Extract OAuth settings - simple patterns that match the actual config format
+        // Format: define('G_CLIENT_ID', 'value');
+        if (preg_match("/define\('G_CLIENT_ID',\s*'([^']*)'\)/", $existing_content, $m)) {
+            $existing_g_client_id = $m[1];
+            error_log("configure.php: Preserving existing G_CLIENT_ID: " . (strlen($m[1]) > 0 ? substr($m[1], 0, 15) . "..." : "(empty)"));
+        }
+        if (preg_match("/define\('G_CLIENT_SECRET',\s*'([^']*)'\)/", $existing_content, $m)) {
+            $existing_g_client_secret = $m[1];
+            error_log("configure.php: Preserving existing G_CLIENT_SECRET: " . (strlen($m[1]) > 0 ? "***" : "(empty)"));
+        }
+        if (preg_match("/define\('G_REDIRECT_URI',\s*'([^']*)'\)/", $existing_content, $m)) {
+            $existing_g_redirect_uri = $m[1];
+            error_log("configure.php: Preserving existing G_REDIRECT_URI: " . $m[1]);
+        }
+        if (preg_match("/define\('G_APPLICATION_NAME',\s*'([^']*)'\)/", $existing_content, $m)) {
+            $existing_g_application_name = $m[1];
+            error_log("configure.php: Preserving existing G_APPLICATION_NAME: " . $m[1]);
+        }
+        
+        // Log summary of what was preserved
+        error_log("configure.php: Extraction summary - sec_key: " . ($existing_sec_key !== null ? 'YES' : 'NO') . 
+                  ", mod_rewrite: $existing_mod_rewrite, version: " . ($existing_version ?? 'unknown') .
+                  ", g_client_id: " . (!empty($existing_g_client_id) ? 'YES' : 'NO'));
+    }
+    
     if (!is_writable($config_file)) {
         ob_end_clean();
         error_log("configure.php: config.php exists but is not writable (owner: {$owner_name($config_file)}, group: {$group_name($config_file)}, perms: {$fmt_perms($config_file)})");
@@ -173,11 +248,32 @@ if (file_exists($config_file)) {
     }
 }
 
+// Use existing sec_key if available, otherwise generate new one
+if ($existing_sec_key !== null) {
+    $sec_key = $existing_sec_key;
+} else {
+    $sec_key = bin2hex(random_bytes(32));
+}
+
+// Use preserved settings
+$mod_rewrite = $existing_mod_rewrite;
+$highlighter = $existing_highlighter;
+$hl_style = $existing_hl_style;
+$comments_enabled_str = $existing_comments_enabled ? 'true' : 'false';
+$comments_require_login_str = $existing_comments_require_login ? 'true' : 'false';
+$comments_on_protected_str = $existing_comments_on_protected ? 'true' : 'false';
+
+// Use preserved OAuth settings or defaults
+$g_client_id = $existing_g_client_id;
+$g_client_secret = $existing_g_client_secret;
+$g_redirect_uri = $existing_g_redirect_uri ?: $redirect_uri;
+$g_application_name = $existing_g_application_name;
+
 // Build config.php content
 $config_content = <<<EOD
 <?php
 /*
- * Paste \$v3.3 2025/10/24 https://github.com/boxlabss/PASTE
+ * Paste \$v3.4 2025/02/01 https://github.com/boxlabss/PASTE
  * demo: https://paste.boxlabs.uk/
  *
  * https://phpaste.sourceforge.io/
@@ -192,8 +288,8 @@ $config_content = <<<EOD
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License in LICENCE for more details.
  */
-
-\$currentversion = 3.3;
+\$devmode = 0; // Only enabled for demo site
+\$currentversion = 3.4;
 \$pastelimit = "10"; // 10 MB
 
 // OAuth settings (for signups)
@@ -201,10 +297,10 @@ $config_content = <<<EOD
 \$enablegoog = "$enablegoog";
 \$enablesmtp = "$enablesmtp";
 
-define('G_CLIENT_ID', '');
-define('G_CLIENT_SECRET', '');
-define('G_REDIRECT_URI', '$redirect_uri');
-define('G_APPLICATION_NAME', 'Paste');
+define('G_CLIENT_ID', '$g_client_id');
+define('G_CLIENT_SECRET', '$g_client_secret');
+define('G_REDIRECT_URI', '$g_redirect_uri');
+define('G_APPLICATION_NAME', '$g_application_name');
 define('G_SCOPES', [
     'https://www.googleapis.com/auth/userinfo.profile',
     'https://www.googleapis.com/auth/userinfo.email'
@@ -222,21 +318,21 @@ define('SECRET', \$sec_key);
 
 // set to 1 to enable tidy urls
 // see docs for an example nginx conf, or .htaccess
-\$mod_rewrite = "0";
+\$mod_rewrite = "$mod_rewrite";
 
 // Enable SMTP debug logging (uncomment)
 // define('SMTP_DEBUG', true);
 
 // Code highlighting engine for non-Markdown pastes: 'highlight' (highlight.php - default) or 'geshi'
-\$highlighter = \$highlighter ?? 'highlight';
+\$highlighter = \$highlighter ?? '$highlighter';
 
 // Style theme for highlighter.php (see includes/Highlight/styles)
-\$hl_style = 'hybrid.css';
+\$hl_style = '$hl_style';
 
 // Comments
-\$comments_enabled          = true;   // on/off
-\$comments_require_login    = true;   // if false, guests can comment
-\$comments_on_protected     = false;  // allow/show comments on password-protected pastes
+\$comments_enabled          = $comments_enabled_str;   // on/off
+\$comments_require_login    = $comments_require_login_str;   // if false, guests can comment
+\$comments_on_protected     = $comments_on_protected_str;  // allow/show comments on password-protected pastes
 
 /**
  * Build the list of selectable formats
@@ -279,7 +375,15 @@ if (file_put_contents($config_file, $config_content, LOCK_EX) === false) {
 error_log("configure.php: Successfully wrote config.php");
 
 // Prepare success message
-$success_message = 'Configuration saved successfully. Proceed above with your admin account and click submit to install the database.<br>';
+$success_message = '';
+if ($is_upgrade) {
+    $success_message .= '<strong>Upgrade detected!</strong> Upgrading from v' . $existing_version . ' to v3.4.<br>';
+    if ($existing_sec_key !== null) {
+        $success_message .= 'Your encryption key has been preserved (existing pastes will remain readable).<br>';
+    }
+    $success_message .= 'Your settings (mod_rewrite, highlighter, comments) have been preserved.<br><br>';
+}
+$success_message .= 'Configuration saved successfully.<br>';
 if ($enablegoog === 'yes' || $enablefb === 'yes') {
     $success_message .= 'Install OAuth dependencies: <code>cd oauth && composer require google/apiclient:^2.12 league/oauth2-client</code><br>Ensure HTTPS is enabled for secure OAuth redirects.';
 }

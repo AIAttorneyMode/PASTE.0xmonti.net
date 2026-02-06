@@ -32,6 +32,14 @@ Requirements
   - Web server (e.g., Apache/Nginx) with HTTPS enabled (if OAuth enabled as below)
 
 See docs/CHANGELOG.md
+Paste 3.4
+====
+* Fixed editing of Pastes
+* Added pastebin.com-like slug support for URLs (default 8 chars)
+* Show a differences link for forked Pastes
+* Show a list of all forks on an original paste
+* Added a json API (see docs/API.md/https://paste.boxlabs.uk/api-docs.php) and a python client.
+* Updated example nginx conf (for URLs)
 
 Paste 3.3
 ====

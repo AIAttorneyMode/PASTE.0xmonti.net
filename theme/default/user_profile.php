@@ -1,6 +1,6 @@
 <?php
 /*
- * Paste $v3.3 2025/10/24 https://github.com/boxlabss/PASTE
+ * Paste $v3.4 2026/02/04 https://github.com/boxlabss/PASTE
  * demo: https://paste.boxlabs.uk/
  *
  * https://phpaste.sourceforge.io/
@@ -147,6 +147,7 @@ $main_col_class = $is_me_local ? 'col-lg-9 order-lg-1' : 'col-lg-12 order-lg-1';
                     foreach ($pastesPage as $row) {
                       $title     = trim((string)($row['title'] ?? 'Untitled'));
                       $p_id      = (int)($row['id'] ?? 0);
+                      $p_slug    = trim((string)($row['slug'] ?? ''));
                       $p_code    = trim((string)($row['code'] ?? 'text'));
                       $p_date    = trim((string)($row['date'] ?? ''));
                       $p_views   = (int)($row['views'] ?? 0);
@@ -157,8 +158,10 @@ $main_col_class = $is_me_local ? 'col-lg-9 order-lg-1' : 'col-lg-12 order-lg-1';
                       elseif ($visible_v === '1') $visible_label = $lang['unlisted'] ?? 'Unlisted';
                       else                        $visible_label = $lang['private']  ?? 'Private';
 
+                      // Use slug if available, otherwise fall back to numeric ID
+                      $url_identifier = $p_slug !== '' ? $p_slug : (string)$p_id;
                       // link
-                      $p_link = ($mod_rewrite == '1') ? (string)$p_id : ('paste.php?id=' . $p_id);
+                      $p_link = ($mod_rewrite == '1') ? $url_identifier : ('paste.php?id=' . $url_identifier);
 
                       // truncate title nicely
                       $title_short = truncate($title, 20, 50);
@@ -307,10 +310,13 @@ $main_col_class = $is_me_local ? 'col-lg-9 order-lg-1' : 'col-lg-12 order-lg-1';
                   <?php foreach ($user_comments as $row):
                     $cid    = (int)($row['id'] ?? 0);
                     $pid    = (int)($row['paste_id'] ?? 0);
+                    $pslug  = trim((string)($row['paste_slug'] ?? ''));
                     $ptitle = (string)($row['title'] ?? 'Untitled');
+                    // Use slug if available, otherwise fall back to numeric ID
+                    $url_identifier = $pslug !== '' ? $pslug : (string)$pid;
                     $purl   = ($mod_rewrite == '1')
-                              ? $baseurl . $pid . '#c-' . $cid
-                              : $baseurl . 'paste.php?id=' . $pid . '#c-' . $cid;
+                              ? $baseurl . $url_identifier . '#c-' . $cid
+                              : $baseurl . 'paste.php?id=' . $url_identifier . '#c-' . $cid;
                     $snippet = trim((string)($row['body'] ?? ''));
                     $snippet = preg_replace('~\s+~', ' ', $snippet);
                     $snippet = truncate($snippet, 20, 160);
@@ -330,9 +336,7 @@ $main_col_class = $is_me_local ? 'col-lg-9 order-lg-1' : 'col-lg-12 order-lg-1';
                       <?php if ($is_me_local): ?>
                         <td class="text-center">
                           <form method="post"
-                                action="<?php echo htmlspecialchars($baseurl . ($mod_rewrite == '1'
-                                                          ? 'user/' . $profile_username
-                                                          : 'user.php?user=' . $profile_username), ENT_QUOTES, 'UTF-8'); ?>"
+                                action="<?php echo htmlspecialchars($baseurl . 'user.php?user=' . rawurlencode($profile_username), ENT_QUOTES, 'UTF-8'); ?>"
                                 class="d-inline"
                                 onsubmit="return confirm('<?php echo htmlspecialchars($lang['confirmdelete'] ?? 'Delete this comment?', ENT_QUOTES, 'UTF-8'); ?>');">
                             <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? '', ENT_QUOTES, 'UTF-8'); ?>">
@@ -390,9 +394,12 @@ $main_col_class = $is_me_local ? 'col-lg-9 order-lg-1' : 'col-lg-12 order-lg-1';
                     foreach ($pastes as $row) {
                       $title  = (string) ($row['title'] ?? 'Untitled');
                       $p_id   = (string) ($row['id'] ?? '');
+                      $p_slug = (string) ($row['slug'] ?? '');
                       $p_date = (string) ($row['date'] ?? '');
                       $p_code = (string) ($row['code'] ?? 'Unknown');
-                      $p_link = ($mod_rewrite == '1') ? "$p_id" : "paste.php?id=$p_id";
+                      // Use slug if available
+                      $url_identifier = $p_slug !== '' ? $p_slug : $p_id;
+                      $p_link = ($mod_rewrite == '1') ? "$url_identifier" : "paste.php?id=$url_identifier";
                       $title  = truncate($title, 20, 50);
                       echo '<tr> 
                         <td><a href="' . htmlspecialchars($baseurl . $p_link) . '" title="' . htmlspecialchars($title) . '" class="text-light fw-medium">' . ucfirst(htmlspecialchars($title)) . '</a></td>    

@@ -131,7 +131,7 @@ try {
 	$page_name = isset($_GET['p']) ? trim($_GET['p']) : (isset($_GET['page']) ? trim($_GET['page']) : '');
 	if ($page_name !== '') {
 		$stmt = $pdo->prepare("
-			SELECT page_title, page_content, last_date
+			SELECT page_title, page_content, last_date, external_url
 			FROM pages
 			WHERE page_name = ? AND is_active = 1
 			LIMIT 1
@@ -139,6 +139,16 @@ try {
 		$stmt->execute([$page_name]);
 		$row = $stmt->fetch();
 		if ($row) {
+			// Check for external URL redirect
+			if (!empty($row['external_url'])) {
+				$external = $row['external_url'];
+				// If relative URL, prepend baseurl
+				if (!preg_match('/^https?:\/\//', $external)) {
+					$external = rtrim($baseurl, '/') . '/' . ltrim($external, '/');
+				}
+				header('Location: ' . $external);
+				exit;
+			}
 			$page_title   = $row['page_title'];
 			$page_content = $row['page_content'];
 			$last_date    = $row['last_date'];

@@ -84,6 +84,310 @@ function decrypt(string $value, string $sec_key): ?string
     return $decrypted !== false ? $decrypted : null;
 }
 
+// ============================================================================
+// SLUG (Randomized URL) Functions
+// ============================================================================
+
+/**
+ * Generate a random URL-safe slug for paste URLs
+ * Uses alphanumeric characters excluding ambiguous ones (0/O, 1/l/I)
+ * 
+ * @param int $length Length of the slug (default 8)
+ * @return string Random slug like "jbFzprF6"
+ */
+function generatePasteSlug(int $length = 8): string
+{
+    // Characters that are URL-safe and unambiguous
+    $chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    $slug = '';
+    $max = strlen($chars) - 1;
+    for ($i = 0; $i < $length; $i++) {
+        $slug .= $chars[random_int(0, $max)];
+    }
+    return $slug;
+}
+
+/**
+ * Generate a unique slug that doesn't exist in the database
+ * 
+ * @param PDO $pdo Database connection
+ * @param int $length Initial slug length
+ * @param int $maxAttempts Maximum attempts before increasing length
+ * @return string Unique slug
+ */
+function generateUniquePasteSlug(PDO $pdo, int $length = 8, int $maxAttempts = 10): string
+{
+    $checkStmt = $pdo->prepare("SELECT COUNT(*) FROM pastes WHERE slug = ?");
+    $attempts = 0;
+    
+    do {
+        $slug = generatePasteSlug($length);
+        $checkStmt->execute([$slug]);
+        $exists = (int)$checkStmt->fetchColumn() > 0;
+        $attempts++;
+        
+        // If we're having trouble finding unique slugs, increase length
+        if ($attempts >= $maxAttempts) {
+            $length++;
+            $attempts = 0;
+            error_log("generateUniquePasteSlug: Increased slug length to $length due to collisions");
+        }
+    } while ($exists && $attempts < $maxAttempts * 3);
+    
+    return $slug;
+}
+
+/**
+ * Get paste URL mode from config or database
+ * Returns 'slug' for randomized URLs or 'numeric' for traditional numeric IDs
+ * 
+ * @param PDO|null $pdo Database connection (optional, for DB-stored setting)
+ * @return string 'slug' or 'numeric'
+ */
+function getPasteUrlMode(?PDO $pdo = null): string
+{
+    // Get from database only (admin panel settings)
+    if ($pdo !== null) {
+        try {
+            // Check if table exists
+            $tableCheck = $pdo->query("SHOW TABLES LIKE 'paste_options'");
+            if ($tableCheck->rowCount() === 0) {
+                // Create the table
+                $pdo->exec("CREATE TABLE paste_options (
+                    id INT NOT NULL AUTO_INCREMENT,
+                    option_name VARCHAR(100) NOT NULL,
+                    option_value TEXT,
+                    PRIMARY KEY(id),
+                    UNIQUE KEY idx_option_name (option_name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+                // Insert default values
+                $pdo->exec("INSERT INTO paste_options (option_name, option_value) VALUES ('url_mode', 'slug'), ('slug_length', '8')");
+                return 'slug';
+            }
+            
+            $stmt = $pdo->prepare("SELECT option_value FROM paste_options WHERE option_name = 'url_mode'");
+            $stmt->execute();
+            $result = $stmt->fetchColumn();
+            
+            // Handle null, false, empty string
+            if ($result !== false && $result !== null && $result !== '') {
+                $result = trim((string)$result);
+                if (in_array($result, ['slug', 'numeric'], true)) {
+                    return $result;
+                }
+            }
+            
+            // Row doesn't exist or has invalid value, insert/update default
+            $pdo->exec("INSERT INTO paste_options (option_name, option_value) VALUES ('url_mode', 'slug') 
+                        ON DUPLICATE KEY UPDATE option_value = 'slug'");
+            return 'slug';
+        } catch (PDOException $e) {
+            error_log("getPasteUrlMode error: " . $e->getMessage());
+        }
+    }
+    
+    // Default to slug for new installs
+    return 'slug';
+}
+
+/**
+ * Get configured slug length
+ * 
+ * @param PDO|null $pdo Database connection (optional)
+ * @return int Slug length (default 8)
+ */
+function getPasteSlugLength(?PDO $pdo = null): int
+{
+    // Get from database only (admin panel settings)
+    if ($pdo !== null) {
+        try {
+            $stmt = $pdo->prepare("SELECT option_value FROM paste_options WHERE option_name = 'slug_length'");
+            $stmt->execute();
+            $result = $stmt->fetchColumn();
+            if ($result !== false && is_numeric($result)) {
+                $len = (int)$result;
+                if ($len >= 4 && $len <= 32) {
+                    return $len;
+                }
+            }
+            
+            // Row doesn't exist, insert default
+            $pdo->exec("INSERT IGNORE INTO paste_options (option_name, option_value) VALUES ('slug_length', '8')");
+            return 8;
+        } catch (PDOException $e) {
+            error_log("getPasteSlugLength error: " . $e->getMessage());
+        }
+    }
+    
+    return 8; // Default
+}
+
+/**
+ * Look up a paste by ID or slug
+ * Supports both numeric IDs and alphanumeric slugs for backwards compatibility
+ * 
+ * @param PDO $pdo Database connection
+ * @param string $identifier Paste ID (numeric) or slug (alphanumeric)
+ * @return array|null Paste row or null if not found
+ */
+function getPasteByIdentifier(PDO $pdo, string $identifier): ?array
+{
+    $identifier = trim($identifier);
+    if ($identifier === '') {
+        return null;
+    }
+    
+    // Check if it's purely numeric (legacy ID lookup)
+    if (ctype_digit($identifier)) {
+        $stmt = $pdo->prepare("SELECT * FROM pastes WHERE id = ? LIMIT 1");
+        $stmt->execute([(int)$identifier]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row !== false ? $row : null;
+    }
+    
+    // Otherwise, look up by slug
+    $stmt = $pdo->prepare("SELECT * FROM pastes WHERE slug = ? LIMIT 1");
+    $stmt->execute([$identifier]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row !== false ? $row : null;
+}
+
+/**
+ * Get the URL identifier for a paste (slug or ID based on mode)
+ * 
+ * @param array $paste Paste row from database
+ * @param PDO|null $pdo Database connection (for URL mode check)
+ * @return string The identifier to use in URLs
+ */
+function getPasteUrlIdentifier(array $paste, ?PDO $pdo = null): string
+{
+    $mode = getPasteUrlMode($pdo);
+    
+    // If slug mode and paste has a slug, use it
+    if ($mode === 'slug' && !empty($paste['slug'])) {
+        return $paste['slug'];
+    }
+    
+    // Fallback to numeric ID
+    return (string)($paste['id'] ?? '');
+}
+
+/**
+ * Build paste URL
+ * 
+ * @param array|int|string $paste Paste array, paste ID, or paste slug
+ * @param string $baseurl Base URL of the site
+ * @param string $mod_rewrite '1' for pretty URLs, '0' for query strings
+ * @param PDO|null $pdo Database connection
+ * @return string Full paste URL
+ */
+function buildPasteUrl($paste, string $baseurl, string $mod_rewrite = '0', ?PDO $pdo = null): string
+{
+    $baseurl = rtrim($baseurl, '/') . '/';
+    
+    // Get identifier
+    if (is_array($paste)) {
+        $identifier = getPasteUrlIdentifier($paste, $pdo);
+    } else {
+        $identifier = (string)$paste;
+    }
+    
+    if ($mod_rewrite === '1') {
+        return $baseurl . rawurlencode($identifier);
+    } else {
+        return $baseurl . 'paste.php?id=' . rawurlencode($identifier);
+    }
+}
+
+/**
+ * Check if a column exists in a table
+ * 
+ * @param PDO $pdo Database connection
+ * @param string $table Table name
+ * @param string $column Column name
+ * @return bool True if column exists
+ */
+function columnExists(PDO $pdo, string $table, string $column): bool
+{
+    try {
+        // Sanitize table and column names (alphanumeric and underscore only)
+        $table = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+        $column = preg_replace('/[^a-zA-Z0-9_]/', '', $column);
+        $stmt = $pdo->query("SHOW COLUMNS FROM `$table` LIKE '$column'");
+        return $stmt->fetch() !== false;
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
+/**
+ * Ensure the slug column exists in the pastes table.
+ * Creates it if missing.
+ * 
+ * @param PDO $pdo Database connection
+ * @return bool True if column exists (or was created), false on error
+ */
+function ensureSlugColumnExists(PDO $pdo): bool
+{
+    // First check if column exists
+    try {
+        $stmt = $pdo->query("SHOW COLUMNS FROM pastes LIKE 'slug'");
+        if ($stmt->fetch() !== false) {
+            return true; // Column exists
+        }
+    } catch (PDOException $e) {
+        // Continue to try creating it
+    }
+    
+    try {
+        // Add the slug column after the id column
+        $pdo->exec("ALTER TABLE pastes ADD COLUMN slug VARCHAR(32) DEFAULT NULL AFTER id");
+    } catch (PDOException $e) {
+        // Error code 1060 = Duplicate column name (column already exists)
+        if (strpos($e->getMessage(), '1060') !== false || strpos($e->getMessage(), 'Duplicate column') !== false) {
+            // Column already exists, that's fine
+            return true;
+        }
+        error_log("ensureSlugColumnExists error: " . $e->getMessage());
+        return false;
+    }
+    
+    // Add unique index (ignore if already exists)
+    try {
+        $pdo->exec("CREATE UNIQUE INDEX idx_pastes_slug ON pastes(slug)");
+    } catch (PDOException $e) {
+        // Index might already exist - that's OK
+    }
+    
+    return true;
+}
+
+/**
+ * Check if numeric URL access should be blocked (404)
+ * 
+ * @param PDO|null $pdo Database connection
+ * @return bool True if numeric URLs should return 404
+ */
+function shouldBlockNumericUrls(?PDO $pdo = null): bool
+{
+    if ($pdo === null) {
+        return false;
+    }
+    
+    try {
+        $stmt = $pdo->prepare("SELECT option_value FROM paste_options WHERE option_name = 'block_numeric_urls'");
+        $stmt->execute();
+        $result = $stmt->fetchColumn();
+        return $result === '1';
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
+// ============================================================================
+// End of Slug Functions
+// ============================================================================
+
 function deleteMyPaste(PDO $pdo, int $paste_id): bool
 {
     try {
@@ -122,7 +426,10 @@ function getRecent(PDO $pdo, int $count = 5, int $offset = 0, string $sortColumn
     try {
         $sortColumn = in_array($sortColumn, ['date', 'title', 'code', 'views']) ? $sortColumn : 'date';
         $sortDirection = in_array($sortDirection, ['ASC', 'DESC']) ? $sortDirection : 'DESC';
-        $query = "SELECT id, title, content, visible, code, expiry, password, member, date, UNIX_TIMESTAMP(date) AS now_time, encrypt 
+        // Check if slug column exists (for backwards compatibility)
+        $hasSlug = columnExists($pdo, 'pastes', 'slug');
+        $slugCol = $hasSlug ? ', slug' : '';
+        $query = "SELECT id{$slugCol}, title, content, visible, code, expiry, password, member, date, UNIX_TIMESTAMP(date) AS now_time, encrypt 
                   FROM pastes WHERE visible = '0' AND password = 'NONE' ORDER BY $sortColumn $sortDirection LIMIT :count OFFSET :offset";
         $stmt = $pdo->prepare($query);
         $stmt->bindValue(':count', $count, PDO::PARAM_INT);
@@ -133,6 +440,10 @@ function getRecent(PDO $pdo, int $count = 5, int $offset = 0, string $sortColumn
             if ($row['encrypt'] == "1") {
                 $row['content'] = decrypt($row['content'], hex2bin(SECRET)) ?? '';
                 $row['title'] = decrypt($row['title'], hex2bin(SECRET)) ?? $row['title'];
+            }
+            // Ensure slug key exists even if column doesn't
+            if (!isset($row['slug'])) {
+                $row['slug'] = '';
             }
         }
         unset($row);
@@ -146,7 +457,10 @@ function getRecent(PDO $pdo, int $count = 5, int $offset = 0, string $sortColumn
 function getUserRecent(PDO $pdo, string $username, int $count = 5): array
 {
     try {
-        $query = "SELECT id, title, content, visible, code, expiry, password, member, date, UNIX_TIMESTAMP(date) AS now_time, encrypt 
+        // Check if slug column exists (for backwards compatibility)
+        $hasSlug = columnExists($pdo, 'pastes', 'slug');
+        $slugCol = $hasSlug ? ', slug' : '';
+        $query = "SELECT id{$slugCol}, title, content, visible, code, expiry, password, member, date, UNIX_TIMESTAMP(date) AS now_time, encrypt 
                   FROM pastes WHERE member = :username ORDER BY id DESC LIMIT :count";
         $stmt = $pdo->prepare($query);
         $stmt->bindValue(':username', $username, PDO::PARAM_STR);
@@ -157,6 +471,10 @@ function getUserRecent(PDO $pdo, string $username, int $count = 5): array
             if ($row['encrypt'] == "1") {
                 $row['content'] = decrypt($row['content'], hex2bin(SECRET)) ?? '';
                 $row['title'] = decrypt($row['title'], hex2bin(SECRET)) ?? $row['title'];
+            }
+            // Ensure slug key exists even if column doesn't
+            if (!isset($row['slug'])) {
+                $row['slug'] = '';
             }
         }
         unset($row);
@@ -170,14 +488,18 @@ function getUserRecent(PDO $pdo, string $username, int $count = 5): array
 function getUserPastes(PDO $pdo, string $username): array
 {
     try {
+        // Check if slug column exists (for backwards compatibility)
+        $hasSlug = columnExists($pdo, 'pastes', 'slug');
+        $slugCol = $hasSlug ? ', p.slug' : '';
+        $slugGroup = $hasSlug ? ', p.slug' : '';
         $query = "
-            SELECT p.id, p.title, p.content, p.visible, p.code, p.password, p.member, p.date, 
+            SELECT p.id{$slugCol}, p.title, p.content, p.visible, p.code, p.password, p.member, p.date, 
                    UNIX_TIMESTAMP(p.date) AS now_time, p.encrypt, p.expiry, 
                    COALESCE(COUNT(pv.id), 0) AS views
             FROM pastes p
             LEFT JOIN paste_views pv ON p.id = pv.paste_id
             WHERE p.member = :username
-            GROUP BY p.id, p.title, p.content, p.visible, p.code, p.password, p.member, p.date, p.encrypt, p.expiry
+            GROUP BY p.id, p.title, p.content, p.visible, p.code, p.password, p.member, p.date, p.encrypt, p.expiry{$slugGroup}
             ORDER BY p.id DESC
         ";
         $stmt = $pdo->prepare($query);
@@ -188,6 +510,10 @@ function getUserPastes(PDO $pdo, string $username): array
             if ($row['encrypt'] == "1") {
                 $row['content'] = decrypt($row['content'], hex2bin(SECRET)) ?? '';
                 $row['title'] = decrypt($row['title'], hex2bin(SECRET)) ?? $row['title'];
+            }
+            // Ensure slug key exists even if column doesn't
+            if (!isset($row['slug'])) {
+                $row['slug'] = '';
             }
         }
         unset($row);
@@ -282,19 +608,12 @@ function updateMyView(PDO $pdo, int $paste_id): bool
         $ip = $_SERVER['REMOTE_ADDR'];
         $view_date = date('Y-m-d');
 
-        // Check if this IP has viewed the paste today
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM paste_views WHERE paste_id = :paste_id AND ip = :ip AND view_date = :view_date");
+        // Use INSERT IGNORE to handle race conditions - if the row already exists, it's silently ignored
+        $stmt = $pdo->prepare("INSERT IGNORE INTO paste_views (paste_id, ip, view_date) VALUES (:paste_id, :ip, :view_date)");
         $stmt->execute(['paste_id' => $paste_id, 'ip' => $ip, 'view_date' => $view_date]);
-        $has_viewed = $stmt->fetchColumn() > 0;
-
-        if (!$has_viewed) {
-            // Log the unique view in paste_views table
-            $stmt = $pdo->prepare("INSERT INTO paste_views (paste_id, ip, view_date) VALUES (:paste_id, :ip, :view_date)");
-            $stmt->execute(['paste_id' => $paste_id, 'ip' => $ip, 'view_date' => $view_date]);
-            return true;
-        }
-
-        return false; // Not a unique view
+        
+        // rowCount() returns 1 if inserted, 0 if ignored (duplicate)
+        return $stmt->rowCount() > 0;
     } catch (PDOException $e) {
         error_log("Failed to update view count for paste ID {$paste_id}: " . $e->getMessage());
         return false;
@@ -527,23 +846,209 @@ function getEmbedUrl($paste_id, $mod_rewrite, $baseurl) {
     }
 }
 
-function addToSitemap(PDO $pdo, int $paste_id, string $priority, string $changefreq, bool $mod_rewrite): bool
+function addToSitemap(PDO $pdo, int $paste_id, string $priority, string $changefreq, bool $mod_rewrite, ?string $slug = null): bool
 {
     try {
-	    global $baseurl, $mod_rewrite;
-        $c_date = date('Y-m-d H:i:s');
+        global $baseurl;
+        $c_date = date('Y-m-d');
+        
+        // Use slug if provided, otherwise try to get it from database
+        $identifier = $paste_id;
+        if ($slug !== null && $slug !== '') {
+            $identifier = $slug;
+        } else {
+            // Try to get slug from database if URL mode is 'slug'
+            try {
+                $urlMode = getPasteUrlMode($pdo);
+                if ($urlMode === 'slug') {
+                    $stmt = $pdo->prepare("SELECT slug FROM pastes WHERE id = ?");
+                    $stmt->execute([$paste_id]);
+                    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                    if ($row && !empty($row['slug'])) {
+                        $identifier = $row['slug'];
+                    }
+                }
+            } catch (PDOException $e) {
+                // Use numeric ID as fallback
+            }
+        }
+        
         $server_name = $mod_rewrite
-            ? $baseurl . $paste_id
-            : $baseurl . "paste.php?id=" . $paste_id;
-        $site_data = file_exists('sitemap.xml') ? file_get_contents('sitemap.xml') : '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">';
-        $site_data = rtrim($site_data, "</urlset>");
-        $c_sitemap = "\t<url>\n\t\t<loc>" . htmlspecialchars($server_name, ENT_QUOTES, 'UTF-8') . "</loc>\n\t\t<priority>$priority</priority>\n\t\t<changefreq>$changefreq</changefreq>\n\t\t<lastmod>$c_date</lastmod>\n\t</url>\n</urlset>";
-        $full_map = $site_data . $c_sitemap;
-        return file_put_contents('sitemap.xml', $full_map) !== false;
+            ? rtrim($baseurl, '/') . '/' . $identifier
+            : rtrim($baseurl, '/') . "/paste.php?id=" . $identifier;
+        
+        $sitemap_path = 'sitemap.xml';
+        
+        // Build the new URL entry
+        $new_entry = "  <url>\n    <loc>" . htmlspecialchars($server_name, ENT_QUOTES, 'UTF-8') . "</loc>\n    <priority>$priority</priority>\n    <changefreq>$changefreq</changefreq>\n    <lastmod>$c_date</lastmod>\n  </url>\n";
+        
+        if (file_exists($sitemap_path)) {
+            $site_data = file_get_contents($sitemap_path);
+            if ($site_data === false) {
+                return false;
+            }
+            // Remove closing </urlset> tag, add new entry, then close
+            $site_data = preg_replace('/<\/urlset>\s*$/', '', $site_data);
+            $full_map = $site_data . $new_entry . "</urlset>\n";
+        } else {
+            // Create new sitemap
+            $full_map = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n" . $new_entry . "</urlset>\n";
+        }
+        
+        return file_put_contents($sitemap_path, $full_map) !== false;
     } catch (Exception $e) {
         error_log("Failed to update sitemap for paste ID {$paste_id}: " . $e->getMessage());
         return false;
     }
+}
+
+/**
+ * Remove a paste from the sitemap when it becomes non-public.
+ */
+function removeFromSitemap(PDO $pdo, int $paste_id): bool
+{
+    try {
+        if (!file_exists('sitemap.xml')) {
+            return true; // Nothing to remove
+        }
+        
+        global $baseurl, $mod_rewrite;
+        
+        $site_data = file_get_contents('sitemap.xml');
+        if ($site_data === false) {
+            return false;
+        }
+        
+        // Build possible URL patterns for this paste
+        $patterns = [];
+        
+        // With mod_rewrite
+        $patterns[] = preg_quote($baseurl . $paste_id, '/');
+        $patterns[] = preg_quote(rtrim($baseurl, '/') . '/' . $paste_id, '/');
+        
+        // Without mod_rewrite
+        $patterns[] = preg_quote($baseurl . "paste.php?id=" . $paste_id, '/');
+        $patterns[] = preg_quote(rtrim($baseurl, '/') . "/paste.php?id=" . $paste_id, '/');
+        
+        // Also try to get the slug for this paste
+        try {
+            $stmt = $pdo->prepare("SELECT slug FROM pastes WHERE id = ?");
+            $stmt->execute([$paste_id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row && !empty($row['slug'])) {
+                $slug = $row['slug'];
+                $patterns[] = preg_quote($baseurl . $slug, '/');
+                $patterns[] = preg_quote(rtrim($baseurl, '/') . '/' . $slug, '/');
+                $patterns[] = preg_quote($baseurl . "paste.php?id=" . $slug, '/');
+            }
+        } catch (PDOException $e) {
+            // Ignore - slug column might not exist
+        }
+        
+        // Remove any <url> block containing these patterns
+        foreach ($patterns as $pattern) {
+            $regex = '/<url>\s*<loc>' . $pattern . '<\/loc>.*?<\/url>\s*/s';
+            $site_data = preg_replace($regex, '', $site_data);
+        }
+        
+        return file_put_contents('sitemap.xml', $site_data) !== false;
+    } catch (Exception $e) {
+        error_log("Failed to remove paste ID {$paste_id} from sitemap: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Regenerate the entire sitemap with current URL mode settings.
+ * Call this after generating slugs or changing URL mode.
+ */
+function regenerateSitemap(PDO $pdo): array
+{
+    $result = ['success' => false, 'count' => 0, 'message' => ''];
+    
+    try {
+        global $baseurl, $mod_rewrite;
+        
+        // Get sitemap options
+        $stmt = $pdo->query("SELECT priority, changefreq FROM sitemap_options WHERE id = 1");
+        $opt = $stmt->fetch() ?: ['priority' => '0.5', 'changefreq' => 'weekly'];
+        $priority = number_format((float)($opt['priority'] ?? 0.5), 1, '.', '');
+        $changefreq = $opt['changefreq'] ?? 'weekly';
+        
+        // Check URL mode
+        $urlMode = getPasteUrlMode($pdo);
+        
+        // Check if slug column exists
+        $hasSlug = false;
+        try {
+            $chk = $pdo->query("SHOW COLUMNS FROM pastes LIKE 'slug'");
+            $hasSlug = ($chk && $chk->rowCount() > 0);
+        } catch (Exception $e) {}
+        
+        $useSlug = ($hasSlug && $urlMode === 'slug');
+        
+        $today = date('Y-m-d');
+        $sitemap_path = rtrim(dirname(__DIR__), '/\\') . '/sitemap.xml';
+        $tmp_path = $sitemap_path . '.tmp';
+        
+        $fh = fopen($tmp_path, 'wb');
+        if (!$fh) {
+            $result['message'] = 'Unable to open sitemap file for writing';
+            return $result;
+        }
+        
+        // XML header
+        fwrite($fh, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        fwrite($fh, "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
+        
+        // Homepage
+        $home = htmlspecialchars(rtrim($baseurl, '/') . '/', ENT_QUOTES, 'UTF-8');
+        fwrite($fh, "  <url>\n    <loc>{$home}</loc>\n    <priority>1.0</priority>\n    <changefreq>daily</changefreq>\n    <lastmod>{$today}</lastmod>\n  </url>\n");
+        
+        $written = 1;
+        $selectCols = $useSlug ? "id, slug, date" : "id, date";
+        
+        // Stream public pastes in chunks
+        $total = (int)$pdo->query("SELECT COUNT(*) FROM pastes WHERE visible = '0'")->fetchColumn();
+        $limit = 500;
+        
+        for ($offset = 0; $offset < $total; $offset += $limit) {
+            $stmt = $pdo->prepare("SELECT {$selectCols} FROM pastes WHERE visible = '0' ORDER BY id DESC LIMIT ? OFFSET ?");
+            $stmt->execute([$limit, $offset]);
+            
+            while ($row = $stmt->fetch()) {
+                $identifier = ($useSlug && !empty($row['slug'])) ? $row['slug'] : $row['id'];
+                $url = $mod_rewrite 
+                    ? rtrim($baseurl, '/') . '/' . rawurlencode($identifier)
+                    : rtrim($baseurl, '/') . '/paste.php?id=' . urlencode($identifier);
+                $loc = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
+                $lastmod = !empty($row['date']) ? substr($row['date'], 0, 10) : $today;
+                
+                fwrite($fh, "  <url>\n    <loc>{$loc}</loc>\n    <priority>{$priority}</priority>\n    <changefreq>{$changefreq}</changefreq>\n    <lastmod>{$lastmod}</lastmod>\n  </url>\n");
+                $written++;
+            }
+        }
+        
+        fwrite($fh, "</urlset>\n");
+        fclose($fh);
+        
+        // Atomic replace
+        if (!rename($tmp_path, $sitemap_path)) {
+            @unlink($tmp_path);
+            $result['message'] = 'Failed to move sitemap into place';
+            return $result;
+        }
+        
+        $result['success'] = true;
+        $result['count'] = $written;
+        $result['message'] = "Sitemap regenerated with {$written} URLs";
+        
+    } catch (Exception $e) {
+        error_log("regenerateSitemap error: " . $e->getMessage());
+        $result['message'] = $e->getMessage();
+    }
+    
+    return $result;
 }
 
 function is_banned(PDO $pdo, string $ip): bool
@@ -603,9 +1108,23 @@ function getNavLinks(PDO $pdo, string $location): array
     $location = in_array($location, ['header', 'footer'], true) ? $location : 'header';
 
     try {
+        // Check if API is enabled (for filtering API page)
+        $api_enabled = true;
+        try {
+            $apiStmt = $pdo->query("SELECT option_value FROM paste_options WHERE option_name = 'api_enabled'");
+            if ($apiStmt) {
+                $apiRow = $apiStmt->fetch();
+                if ($apiRow) {
+                    $api_enabled = ($apiRow['option_value'] !== '0');
+                }
+            }
+        } catch (PDOException $e) {
+            // Table might not exist, default to showing API
+        }
+        
         // Get all active pages that match this location or are marked for both
         $stmt = $pdo->prepare("
-            SELECT id, page_name, page_title, nav_parent, sort_order
+            SELECT id, page_name, page_title, nav_parent, sort_order, external_url
             FROM pages
             WHERE is_active = 1
               AND (location = :loc OR location = 'both')
@@ -615,13 +1134,24 @@ function getNavLinks(PDO $pdo, string $location): array
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $items = [];
         foreach ($rows as $r) {
+            // Skip API page if API is disabled
+            if ($r['page_name'] === 'api' && !$api_enabled) {
+                continue;
+            }
+            
+            // Determine URL: use external_url if set, otherwise use page URL
+            $url = !empty($r['external_url']) 
+                ? $r['external_url'] 
+                : getPageUrl((string)$r['page_name']);
+            
             $items[(int)$r['id']] = [
                 'id'       => (int)$r['id'],
                 'name'     => (string)$r['page_name'],
                 'title'    => (string)$r['page_title'],
                 'parent'   => $r['nav_parent'] !== null ? (int)$r['nav_parent'] : null,
                 'order'    => (int)$r['sort_order'],
-                'url'      => getPageUrl((string)$r['page_name']),
+                'url'      => $url,
+                'external' => !empty($r['external_url']),
                 'children' => [],
             ];
         }

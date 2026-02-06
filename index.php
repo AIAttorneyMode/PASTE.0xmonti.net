@@ -1,6 +1,6 @@
 <?php
 /*
- * Paste $v3.3 2025/10/24 https://github.com/boxlabss/PASTE
+ * Paste $v3.4 2026/02/02 https://github.com/boxlabss/PASTE
  * demo: https://paste.boxlabs.uk/
  *
  * https://phpaste.sourceforge.io/
@@ -90,6 +90,7 @@ try {
     $perm = $stmt->fetch() ?: [];
     $disableguest = trim($perm['disableguest'] ?? 'off');
     $siteprivate = trim($perm['siteprivate'] ?? 'off');
+    $hiderecentpastes = trim($perm['hiderecentpastes'] ?? 'off');
     error_log("index.php: site_permissions query result: disableguest=$disableguest, siteprivate=$siteprivate");
     // Mirror captcha config into session for recaptcha.php (expects these names)
     $_SESSION['cap_e'] = $cap_e; // 'on'|'off'
@@ -174,6 +175,92 @@ try {
 }
 // POST: create paste
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    // Check if this is an edit of an existing paste (only if "edit" button was clicked)
+    $isEdit = isset($_POST['edit']) && isset($_POST['paste_id']) && !empty($_POST['paste_id']);
+    // Check if this is an explicit fork (fork button clicked)
+    $isFork = isset($_POST['fork']) && isset($_POST['fork_from']) && !empty($_POST['fork_from']);
+    
+    // Check guest permissions - guests cannot paste or fork if disabled
+    if (!isset($_SESSION['username'])) {
+        if ($disableguest === 'on') {
+            $error = $lang['guestsdisabled'] ?? 'Guest posting is disabled. Please login or register.';
+            goto OutPut;
+        }
+    }
+    
+    $editPasteId = null;
+    $editPasteSlug = null;
+    $forkParentId = null; // Track the original paste when forking
+    
+    // Handle explicit fork - always create new paste with parent_id
+    if ($isFork) {
+        $forkFromId = $_POST['fork_from'];
+        try {
+            // Get the parent paste ID
+            if (function_exists('getPasteByIdentifier')) {
+                $parentPaste = getPasteByIdentifier($pdo, $forkFromId);
+            } else {
+                if (ctype_digit((string)$forkFromId)) {
+                    $stmt = $pdo->prepare("SELECT id FROM pastes WHERE id = ?");
+                    $stmt->execute([(int)$forkFromId]);
+                } else {
+                    $stmt = $pdo->prepare("SELECT id FROM pastes WHERE slug = ?");
+                    $stmt->execute([$forkFromId]);
+                }
+                $parentPaste = $stmt->fetch(PDO::FETCH_ASSOC);
+            }
+            if ($parentPaste) {
+                $forkParentId = (int)$parentPaste['id'];
+            }
+        } catch (PDOException $e) {
+            error_log("index.php: fork lookup error: " . $e->getMessage());
+        }
+        $isEdit = false; // Forks always create new pastes
+    }
+    // Handle edit button - only update if user owns the paste
+    elseif ($isEdit) {
+        // Verify the user owns this paste
+        $editPasteId = $_POST['paste_id'];
+        try {
+            // Try to get the paste - support both slug and numeric ID
+            if (function_exists('getPasteByIdentifier')) {
+                $existingPaste = getPasteByIdentifier($pdo, $editPasteId);
+            } else {
+                // Fallback for older code
+                if (ctype_digit((string)$editPasteId)) {
+                    $stmt = $pdo->prepare("SELECT id, slug, member FROM pastes WHERE id = ?");
+                    $stmt->execute([(int)$editPasteId]);
+                } else {
+                    $stmt = $pdo->prepare("SELECT id, slug, member FROM pastes WHERE slug = ?");
+                    $stmt->execute([$editPasteId]);
+                }
+                $existingPaste = $stmt->fetch(PDO::FETCH_ASSOC);
+            }
+            
+            if (!$existingPaste) {
+                $error = $lang['notfound'] ?? 'Paste not found.';
+                goto OutPut;
+            }
+            
+            // Check ownership
+            $pasteOwner = $existingPaste['member'] ?? 'Guest';
+            $currentUser = $_SESSION['username'] ?? '';
+            
+            if ($currentUser === '' || $currentUser !== $pasteOwner) {
+                // Not the owner - fall back to creating a fork (new paste)
+                $isEdit = false;
+                $forkParentId = (int)$existingPaste['id']; // Track the parent for diff
+            } else {
+                // User owns the paste - get the numeric ID and slug for update
+                $editPasteId = (int)$existingPaste['id'];
+                $editPasteSlug = $existingPaste['slug'] ?? null;
+            }
+        } catch (PDOException $e) {
+            error_log("index.php: edit verify err " . $e->getMessage());
+            $isEdit = false; // Fall back to creating new paste
+        }
+    }
+    
     // empty content
     if (empty($_POST["paste_data"]) || trim($_POST["paste_data"]) === '') {
         $error = $lang['empty_paste'] ?? 'Paste content cannot be empty.';
@@ -196,8 +283,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     // consume them so they only affect one submit
     if ($captchaOverridePass) unset($_SESSION['forcepass']);
     if ($captchaOverrideFail) unset($_SESSION['forcefail']);
+    
+    // Determine if guest needs captcha check
+    // Run captcha if: guest AND guest posting is enabled
+    $guestNeedsCaptcha = !isset($_SESSION['username']) && ($disableguest !== "on");
+    
     // captcha checks for guests (respect admin config)
-    if (!isset($_SESSION['username']) && ($disableguest !== "on")) {
+    if ($guestNeedsCaptcha) {
         // 1) debug overrides first
         if ($captchaOverridePass) {
             // Skip ALL captcha checks
@@ -294,21 +386,71 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         'self' => "SELF",
         default => "NULL",
     };
-    // insert
+    // insert or update
     try {
-        $stmt = $pdo->prepare("INSERT INTO pastes (title, content, visible, code, expiry, password, encrypt, member, date, ip, now_time, s_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->execute([$p_title, $p_content, $p_visible, $p_code, $expires, $p_password, $p_encrypt, $p_member, $p_date, $ip, $now_time, $s_date]);
-        $paste_id = $pdo->lastInsertId();
-        // sitemap for public
-        if ($p_visible === '0') {
-            addToSitemap($pdo, (int)$paste_id, $priority, $changefreq, $mod_rewrite == '1');
+        if ($isEdit && $editPasteId) {
+            // UPDATE existing paste (user owns it)
+            $stmt = $pdo->prepare("UPDATE pastes SET title = ?, content = ?, visible = ?, code = ?, expiry = ?, password = ?, encrypt = ?, date = ?, ip = ?, now_time = ?, s_date = ? WHERE id = ?");
+            $stmt->execute([$p_title, $p_content, $p_visible, $p_code, $expires, $p_password, $p_encrypt, $p_date, $ip, $now_time, $s_date, $editPasteId]);
+            
+            $paste_id = $editPasteId;
+            $p_slug = $editPasteSlug; // Preserve the original slug
+            
+            // Update sitemap based on visibility
+            if ($p_visible === '0') {
+                addToSitemap($pdo, (int)$paste_id, $priority, $changefreq, $mod_rewrite == '1', $p_slug);
+            } else {
+                // Remove from sitemap if no longer public
+                removeFromSitemap($pdo, (int)$paste_id);
+            }
+            
+            // Determine URL identifier (slug or numeric ID)
+            $url_identifier = ($p_slug && $p_slug !== '') ? $p_slug : $paste_id;
+        } else {
+            // INSERT new paste
+            // Check if URL mode is 'slug' and ensure slug column exists
+            $useSlug = false;
+            $p_slug = null;
+            $urlMode = getPasteUrlMode($pdo);
+            error_log("index.php: URL mode = '$urlMode'");
+            
+            if ($urlMode === 'slug') {
+                // Ensure slug column exists (auto-creates if missing)
+                if (ensureSlugColumnExists($pdo)) {
+                    $useSlug = true;
+                    $slugLength = getPasteSlugLength($pdo);
+                    $p_slug = generateUniquePasteSlug($pdo, $slugLength);
+                    error_log("index.php: Generated slug = '$p_slug' (length=$slugLength)");
+                } else {
+                    error_log("index.php: Failed to ensure slug column exists");
+                }
+            }
+            
+            if ($useSlug) {
+                $stmt = $pdo->prepare("INSERT INTO pastes (slug, parent_id, title, content, visible, code, expiry, password, encrypt, member, date, ip, now_time, s_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([$p_slug, $forkParentId, $p_title, $p_content, $p_visible, $p_code, $expires, $p_password, $p_encrypt, $p_member, $p_date, $ip, $now_time, $s_date]);
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO pastes (parent_id, title, content, visible, code, expiry, password, encrypt, member, date, ip, now_time, s_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([$forkParentId, $p_title, $p_content, $p_visible, $p_code, $expires, $p_password, $p_encrypt, $p_member, $p_date, $ip, $now_time, $s_date]);
+            }
+            
+            $paste_id = $pdo->lastInsertId();
+            
+            // sitemap for public
+            if ($p_visible === '0') {
+                addToSitemap($pdo, (int)$paste_id, $priority, $changefreq, $mod_rewrite == '1', $p_slug);
+            }
+            
+            // Determine URL identifier (slug or numeric ID)
+            $url_identifier = ($useSlug && $p_slug) ? $p_slug : $paste_id;
         }
-		// redirect to paste
-		$paste_url = ($mod_rewrite == '1') ? ($baseurl . $paste_id) : ($baseurl . 'paste.php?id=' . $paste_id);
-		header("Location: " . $paste_url);
-		exit;
+        
+        // redirect to paste
+        $paste_url = ($mod_rewrite == '1') ? ($baseurl . $url_identifier) : ($baseurl . 'paste.php?id=' . $url_identifier);
+        header("Location: " . $paste_url);
+        exit;
     } catch (PDOException $e) {
-        error_log("index.php: insert err ".$e->getMessage());
+        error_log("index.php: " . ($isEdit ? "update" : "insert") . " err " . $e->getMessage());
         $error = ($lang['paste_db_error'] ?? 'Database error.') . ': ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8');
         goto OutPut;
     }
