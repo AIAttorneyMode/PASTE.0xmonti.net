@@ -76,14 +76,7 @@ $sameLangs = ($lang_left_label ?? '') === ($lang_right_label ?? '');
 			<span class="badge bg-danger-subtle  border border-danger-subtle  text-danger-emphasis"  title="Deleted lines">-<?= $changes_del ?></span>
 			<span class="badge bg-secondary-subtle" title="Total changed lines">±<?= $changes_total ?></span>
 		  </div>
-		  <div class="btn-group btn-group-sm ms-2" role="group" aria-label="Jump">
-			<button class="btn btn-outline-secondary" id="btnPrevChange" type="button" title="Previous change">
-			  <i class="bi bi-chevron-up" aria-hidden="true"></i><span class="d-none d-sm-inline ms-1">Prev</span>
-			</button>
-			<button class="btn btn-outline-secondary" id="btnNextChange" type="button" title="Next change">
-			  <i class="bi bi-chevron-down" aria-hidden="true"></i><span class="d-none d-sm-inline ms-1">Next</span>
-			</button>
-		  </div>
+		  <!-- Prev/Next moved to floating overlay inside diff area -->
 		<?php endif; ?>
 	  </div>
 
@@ -195,6 +188,17 @@ $sameLangs = ($lang_left_label ?? '') === ($lang_right_label ?? '');
 
   <!-- Diff viewer -->
   <div class="diff-area mt-2">
+    <?php if (!$no_changes): ?>
+    <div class="diff-float-nav" id="diffFloatNav" role="group" aria-label="Navigate changes">
+      <button class="dfn-btn" id="btnPrevChange" type="button" title="Previous change (P)">
+        <i class="bi bi-chevron-up" aria-hidden="true"></i>
+      </button>
+      <span class="dfn-counter" id="dfnCounter">– / –</span>
+      <button class="dfn-btn" id="btnNextChange" type="button" title="Next change (N)">
+        <i class="bi bi-chevron-down" aria-hidden="true"></i>
+      </button>
+    </div>
+    <?php endif; ?>
     <div class="diff-scroll" id="diffScroll" data-init-split="<?= $h((string)($split_pct ?? 50)) ?>">
       <div class="split-overlay" id="splitOverlay">
         <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize"></div>
@@ -212,27 +216,23 @@ $sameLangs = ($lang_left_label ?? '') === ($lang_right_label ?? '');
         <?php foreach ($sideRows as $r): ?>
           <tr>
             <td class="no"><?= $h($r['lno']) ?></td>
-            <td class="code left <?= $r['lclass'] ?>"><div class="code-inner">
-              <?php if ($r['lclass'] === 'ctx'): ?>
-                <?= hl_render_line((string)$r['lhtml'], $lang_left ?? 'text') ?>
-              <?php else: ?>
-                <?php if ($r['lhtml'] !== ''): ?>
-                  <span class="marker"><?= $r['lclass']==='del' ? '–' : '' ?></span>
-                <?php endif; ?>
-                <?= $r['l_intra'] ? $r['lhtml'] : $h($r['lhtml']) ?>
-              <?php endif; ?>
-            </div></td>
+            <td class="code left <?= $r['lclass'] ?>"><div class="code-inner"><?php
+              if ($r['lclass'] === 'ctx') {
+                echo hl_render_line((string)$r['lhtml'], $lang_left ?? 'text');
+              } else {
+                if ($r['lhtml'] !== '') echo '<span class="marker">'.($r['lclass']==='del' ? '–' : '').'</span>';
+                echo $r['l_intra'] ? $r['lhtml'] : $h($r['lhtml']);
+              }
+            ?></div></td>
             <td class="no"><?= $h($r['rno']) ?></td>
-            <td class="code right <?= $r['rclass'] ?>"><div class="code-inner">
-              <?php if ($r['rclass'] === 'ctx'): ?>
-                <?= hl_render_line((string)$r['rhtml'], $lang_right ?? 'text') ?>
-              <?php else: ?>
-                <?php if ($r['rhtml'] !== ''): ?>
-                  <span class="marker"><?= $r['rclass']==='add' ? '+' : '' ?></span>
-                <?php endif; ?>
-                <?= $r['r_intra'] ? $r['rhtml'] : $h($r['rhtml']) ?>
-              <?php endif; ?>
-            </div></td>
+            <td class="code right <?= $r['rclass'] ?>"><div class="code-inner"><?php
+              if ($r['rclass'] === 'ctx') {
+                echo hl_render_line((string)$r['rhtml'], $lang_right ?? 'text');
+              } else {
+                if ($r['rhtml'] !== '') echo '<span class="marker">'.($r['rclass']==='add' ? '+' : '').'</span>';
+                echo $r['r_intra'] ? $r['rhtml'] : $h($r['rhtml']);
+              }
+            ?></div></td>
           </tr>
         <?php endforeach; ?>
         </tbody>
@@ -246,16 +246,14 @@ $sameLangs = ($lang_left_label ?? '') === ($lang_right_label ?? '');
           <tr>
             <td class="no"><?= $h($r['lno']) ?></td>
             <td class="no"><?= $h($r['rno']) ?></td>
-            <td class="code <?= $r['class'] ?>"><div class="code-inner">
-              <?php if ($r['class'] === 'ctx'): ?>
-                <?= hl_render_line((string)$r['html'], $lang_unified) ?>
-              <?php else: ?>
-                <?php if ($r['html'] !== ''): ?>
-                  <span class="marker"><?= $r['class']==='add' ? '+' : ($r['class']==='del' ? '–' : '') ?></span>
-                <?php endif; ?>
-                <?= $r['intra'] ? $r['html'] : $h($r['html']) ?>
-              <?php endif; ?>
-            </div></td>
+            <td class="code <?= $r['class'] ?>"><div class="code-inner"><?php
+              if ($r['class'] === 'ctx') {
+                echo hl_render_line((string)$r['html'], $lang_unified);
+              } else {
+                if ($r['html'] !== '') echo '<span class="marker">'.($r['class']==='add' ? '+' : ($r['class']==='del' ? '–' : '')).'</span>';
+                echo $r['intra'] ? $r['html'] : $h($r['html']);
+              }
+            ?></div></td>
           </tr>
         <?php endforeach; ?>
         </tbody>
@@ -427,8 +425,11 @@ $sameLangs = ($lang_left_label ?? '') === ($lang_right_label ?? '');
 
   (function(){
     const qs = s => Array.from(document.querySelectorAll(s));
+    const scrollPort = document.getElementById('diffScroll');
+    const counter    = document.getElementById('dfnCounter');
+
     function changeRows() {
-      const side = qs('#tblSide tbody tr').filter(tr => {
+      const side = qs('#tblSide tbody tr:not(.diff-merge-row)').filter(tr => {
         const l = tr.querySelector('.code.left');
         const r = tr.querySelector('.code.right');
         return l?.classList.contains('del') || r?.classList.contains('add');
@@ -437,25 +438,40 @@ $sameLangs = ($lang_left_label ?? '') === ($lang_right_label ?? '');
         const c = tr.querySelector('.code');
         return c?.classList.contains('add') || c?.classList.contains('del');
       });
-      // whichever table is visible
       const tblSide = document.getElementById('tblSide');
       return (tblSide && tblSide.style.display !== 'none') ? side : uni;
     }
 
     function scrollToRow(row) {
-      if (!row) return;
+      if (!row || !scrollPort) return;
+      // Scroll within the diff container, not the whole page
+      const portRect = scrollPort.getBoundingClientRect();
+      const rowRect  = row.getBoundingClientRect();
+      const offset   = rowRect.top - portRect.top + scrollPort.scrollTop
+                       - scrollPort.clientHeight / 2 + row.offsetHeight / 2;
+      scrollPort.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' });
+      row.classList.remove('jump-flash');
+      void row.offsetWidth;
       row.classList.add('jump-flash');
-      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      setTimeout(()=> row.classList.remove('jump-flash'), 600);
+      setTimeout(()=> row.classList.remove('jump-flash'), 900);
     }
 
     let idx = -1;
+    function updateCounter() {
+      if (!counter) return;
+      const total = changeRows().length;
+      counter.textContent = total ? `${idx + 1} / ${total}` : '– / –';
+    }
     function jump(dir) {
       const rows = changeRows();
       if (!rows.length) return;
       idx = (idx + dir + rows.length) % rows.length;
       scrollToRow(rows[idx]);
+      updateCounter();
     }
+
+    // Init counter when diff loads
+    setTimeout(updateCounter, 400);
 
     document.getElementById('btnNextChange')?.addEventListener('click', ()=>jump(+1));
     document.getElementById('btnPrevChange')?.addEventListener('click', ()=>jump(-1));
@@ -562,5 +578,366 @@ $sameLangs = ($lang_left_label ?? '') === ($lang_right_label ?? '');
       requestAnimationFrame(layoutSideTable);
     });
   })();
+})();
+</script>
+
+<!-- ================================================================
+     DIFF MINIMAP  +  MERGE BUTTONS
+     ================================================================ -->
+<script>
+/* ================================================================
+   MINIMAP
+   Renders a narrow strip beside the scrollport with coloured marks
+   for every changed row.  Positions are computed via
+   getBoundingClientRect() so they are always accurate.
+   ================================================================ */
+(function () {
+  'use strict';
+
+  var scroll = document.getElementById('diffScroll');
+  if (!scroll) return;
+
+  /* ── DOM setup ─────────────────────────────────────────────── */
+  var wrap = document.createElement('div');
+  wrap.className = 'diff-map-wrap';
+  scroll.parentNode.insertBefore(wrap, scroll);
+  wrap.appendChild(scroll);
+
+  var map = document.createElement('div');
+  map.id  = 'diffMap';
+  map.className = 'diff-map';
+  wrap.appendChild(map);
+
+  /* Leave the floating nav in .diff-area (position:relative) —
+     it will be pinned to the bottom-right corner outside the scroll pane */
+  var floatNav = document.getElementById('diffFloatNav');
+  // no reparenting needed
+
+  var thumb = document.createElement('div');
+  thumb.className = 'diff-map-thumb';
+  map.appendChild(thumb);
+
+  /* expose rebuild so merge code can call it */
+  window.diffMinimapRebuild = rebuild;
+
+  /* ── Helpers ───────────────────────────────────────────────── */
+  function activeTable() {
+    var s = document.getElementById('tblSide');
+    return (s && s.style.display !== 'none') ? s
+         : document.getElementById('tblUni');
+  }
+
+  function flashRow(tr) {
+    tr.classList.remove('jump-flash');
+    void tr.offsetWidth;               /* restart animation */
+    tr.classList.add('jump-flash');
+    setTimeout(function () { tr.classList.remove('jump-flash'); }, 900);
+  }
+
+  /* Convert a tr's position to a Y coordinate inside the map */
+  function rowY(tr) {
+    var scrollTop  = scroll.getBoundingClientRect().top;
+    var trTop      = tr.getBoundingClientRect().top;
+    /* absolute offset within the scrollable content */
+    return trTop - scrollTop + scroll.scrollTop;
+  }
+
+  /* ── Rebuild marks ─────────────────────────────────────────── */
+  function rebuild() {
+    map.querySelectorAll('.diff-map-mark').forEach(function (m) { m.remove(); });
+    var tbl = activeTable();
+    if (!tbl) return;
+
+    var totalH = scroll.scrollHeight;
+    var mapH   = map.clientHeight;
+    if (!totalH || !mapH) return;
+
+    tbl.querySelectorAll('tbody tr:not(.diff-merge-row)').forEach(function (tr) {
+      var lc = tr.querySelector('.code.left');
+      var rc = tr.querySelector('.code.right');
+      var uc = tr.querySelector('.code:not(.left):not(.right)');
+
+      var isDel = !!(lc && lc.classList.contains('del'))
+               || !!(uc && uc.classList.contains('del'));
+      var isAdd = !!(rc && rc.classList.contains('add'))
+               || !!(uc && uc.classList.contains('add'));
+      if (!isDel && !isAdd) return;
+
+      var type = (isDel && isAdd) ? 'mod' : (isAdd ? 'add' : 'del');
+
+      var absY = rowY(tr);
+      var y = (absY   / totalH) * mapH;
+      var h = Math.max(2, (tr.offsetHeight / totalH) * mapH);
+
+      var mark = document.createElement('div');
+      mark.className    = 'diff-map-mark ' + type;
+      mark.style.top    = y.toFixed(1) + 'px';
+      mark.style.height = h.toFixed(1) + 'px';
+      mark.title        = { mod:'Modified', add:'Added', del:'Deleted' }[type] + ' line';
+
+      (function (row) {
+        mark.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var center = rowY(row) - scroll.clientHeight / 2 + row.offsetHeight / 2;
+          scroll.scrollTo({ top: Math.max(0, center), behavior: 'smooth' });
+          flashRow(row);
+        });
+      })(tr);
+
+      map.appendChild(mark);
+    });
+
+    syncThumb();
+  }
+
+  /* ── Viewport thumb ────────────────────────────────────────── */
+  function syncThumb() {
+    var mapH   = map.clientHeight;
+    var totalH = scroll.scrollHeight;
+    var viewH  = scroll.clientHeight;
+    if (!mapH || !totalH) return;
+    var h   = Math.max(16, (viewH  / totalH) * mapH);
+    var top = Math.min(mapH - h,   (scroll.scrollTop / totalH) * mapH);
+    thumb.style.height = h.toFixed(1)   + 'px';
+    thumb.style.top    = top.toFixed(1) + 'px';
+  }
+
+  /* Drag thumb to scroll */
+  var dragging = false, dragStartY = 0, dragStartScroll = 0;
+  thumb.addEventListener('mousedown', function (e) {
+    dragging = true;
+    dragStartY      = e.clientY;
+    dragStartScroll = scroll.scrollTop;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', function (e) {
+    if (!dragging) return;
+    var mapH   = map.clientHeight;
+    var totalH = scroll.scrollHeight;
+    var delta  = (e.clientY - dragStartY) / mapH * totalH;
+    scroll.scrollTop = Math.max(0, Math.min(totalH, dragStartScroll + delta));
+  });
+  document.addEventListener('mouseup', function () { dragging = false; });
+
+  /* Click map background to jump */
+  map.addEventListener('click', function (e) {
+    if (e.target === thumb) return;
+    var rect = map.getBoundingClientRect();
+    var pct  = Math.max(0, Math.min(1, (e.clientY - rect.top) / map.clientHeight));
+    scroll.scrollTo({ top: pct * scroll.scrollHeight, behavior: 'smooth' });
+  });
+
+  scroll.addEventListener('scroll',  syncThumb, { passive: true });
+  window.addEventListener('resize',  function () { rebuild(); }, { passive: true });
+
+  /* Initial build — wait for layout to settle */
+  setTimeout(rebuild, 350);
+
+  /* Rebuild when switching view mode */
+  ['btnSide', 'btnUni'].forEach(function (id) {
+    var btn = document.getElementById(id);
+    if (btn) btn.addEventListener('click', function () { setTimeout(rebuild, 150); });
+  });
+})();
+
+/* ================================================================
+   MERGE BUTTONS
+   Adds a small action bar after each changed hunk in side-by-side
+   view.  Clicking a button rewrites the target textarea in-place —
+   NO page reload, NO form submit.
+   "Merge to left"  = copy the RIGHT side's lines into the LEFT editor
+   "Merge to right" = copy the LEFT side's lines into the RIGHT editor
+   ================================================================ */
+(function () {
+  'use strict';
+
+  var tblSide = document.getElementById('tblSide');
+  var leftTA  = document.getElementById('leftText');
+  var rightTA = document.getElementById('rightText');
+  if (!tblSide || !leftTA || !rightTA) return;
+
+  /* ── Row helpers ───────────────────────────────────────────── */
+  function dataRows() {
+    return Array.from(tblSide.querySelectorAll('tbody tr:not(.diff-merge-row)'));
+  }
+
+  /* ── Hunk detection ────────────────────────────────────────── */
+  /* A row is "changed" if either side has class del or add */
+  function isChanged(tr) {
+    var lc = tr.querySelector('.code.left');
+    var rc = tr.querySelector('.code.right');
+    return (lc && (lc.classList.contains('del') || lc.classList.contains('add')))
+        || (rc && (rc.classList.contains('add') || rc.classList.contains('del')));
+  }
+
+  function collectHunks(rows) {
+    var hunks = [], cur = null;
+    rows.forEach(function (tr) {
+      if (isChanged(tr)) {
+        if (!cur) cur = [];
+        cur.push(tr);
+      } else if (cur) {
+        hunks.push(cur);
+        cur = null;
+      }
+    });
+    if (cur) hunks.push(cur);
+    return hunks;
+  }
+
+  /* ── Build / refresh merge rows ────────────────────────────── */
+  function buildMergeRows() {
+    tblSide.querySelectorAll('tr.diff-merge-row').forEach(function (r) { r.remove(); });
+    var rows  = dataRows();
+    var hunks = collectHunks(rows);
+
+    hunks.forEach(function (hunkRows) {
+      var mr = document.createElement('tr');
+      mr.className  = 'diff-merge-row';
+      mr.innerHTML  =
+        /* Left pane cell (lno + code-l) */
+        '<td colspan="2" class="merge-cell merge-cell-l">' +
+          '<button class="btn-merge btn-merge-r" type="button" ' +
+                  'title="Copy left (old) into the right editor">' +
+            'Merge to right &#8594;' +
+          '</button>' +
+        '</td>' +
+        /* Right pane cell (lno-r + code-r) */
+        '<td colspan="2" class="merge-cell merge-cell-r">' +
+          '<button class="btn-merge btn-merge-dismiss" type="button" ' +
+                  'title="Dismiss this hunk">&#x2715;</button>' +
+          '<button class="btn-merge btn-merge-l" type="button" ' +
+                  'title="Copy right (new) into the left editor">' +
+            '&#8592; Merge to left' +
+          '</button>' +
+        '</td>';
+
+      hunkRows[hunkRows.length - 1].after(mr);
+
+      (function (hunk, mergeRow) {
+        mergeRow.querySelector('.btn-merge-l').addEventListener('click', function () {
+          if (applyHunk(hunk, rows, 'left') !== false)
+            markDone(hunk, mergeRow, 'left');
+        });
+        mergeRow.querySelector('.btn-merge-r').addEventListener('click', function () {
+          if (applyHunk(hunk, rows, 'right') !== false)
+            markDone(hunk, mergeRow, 'right');
+        });
+        mergeRow.querySelector('.btn-merge-dismiss').addEventListener('click', function () {
+          mergeRow.remove();
+        });
+      })(hunkRows, mr);
+    });
+  }
+
+  /* ── Read 1-based line number from the correct td.no cell ── */
+  function tdLineNo(tr, side) {
+    var nos = tr.querySelectorAll('td.no');
+    return parseInt((nos[side === 'left' ? 0 : 1] || {}).textContent || '', 10) || 0;
+  }
+
+  /* ── Apply a hunk merge using direct line-number indexing ────────────
+     td.no line numbers come from the diff engine — they are exact.
+     We use them as direct 0-based array indices with no content checking. ── */
+  function applyHunk(hunkRows, allRows, dest) {
+    var delInfo = [], addInfo = [];
+    hunkRows.forEach(function (tr) {
+      var lc = tr.querySelector('.code.left');
+      var rc = tr.querySelector('.code.right');
+      if (lc && lc.classList.contains('del')) {
+        var n = tdLineNo(tr, 'left');
+        if (n) delInfo.push(n);
+      }
+      if (rc && rc.classList.contains('add')) {
+        var n = tdLineNo(tr, 'right');
+        if (n) addInfo.push(n);
+      }
+    });
+
+    var leftLines  = leftTA.value.split('\n');
+    var rightLines = rightTA.value.split('\n');
+
+    if (dest === 'right') {
+      /* Pull exact source lines from left textarea at their diff positions */
+      var srcLines = delInfo.map(function(n) { return leftLines[n - 1]; });
+
+      if (addInfo.length > 0) {
+        /* Replace the add-lines in right at their exact positions */
+        rightLines.splice(addInfo[0] - 1, addInfo.length, ...srcLines);
+      } else {
+        /* Pure deletion: insert after nearest context line in right */
+        var anchor = contextAnchorDirect(hunkRows, allRows, 'right');
+        rightLines.splice(anchor + 1, 0, ...srcLines);
+      }
+      rightTA.value = rightLines.join('\n');
+
+    } else {
+      /* Pull exact source lines from right textarea at their diff positions */
+      var srcLines2 = addInfo.map(function(n) { return rightLines[n - 1]; });
+
+      if (delInfo.length > 0) {
+        /* Replace the del-lines in left at their exact positions */
+        leftLines.splice(delInfo[0] - 1, delInfo.length, ...srcLines2);
+      } else {
+        /* Pure addition: insert after nearest context line in left */
+        var anchor2 = contextAnchorDirect(hunkRows, allRows, 'left');
+        leftLines.splice(anchor2 + 1, 0, ...srcLines2);
+      }
+      leftTA.value = leftLines.join('\n');
+    }
+    return true;
+  }
+
+  /* Walk back to the nearest context row and return its 0-based line index. */
+  function contextAnchorDirect(hunkRows, allRows, side) {
+    var start = allRows.indexOf(hunkRows[0]);
+    for (var i = start - 1; i >= 0; i--) {
+      var cell = allRows[i].querySelector('.code.' + side);
+      if (!cell || !cell.classList.contains('ctx')) continue;
+      var n = tdLineNo(allRows[i], side);
+      if (n) return n - 1;
+    }
+    return -1;
+  }
+
+  /* ── Visual feedback after merge (no reload) ────────────────── */
+  function markDone(hunkRows, mergeRow, dest) {
+    var label = dest === 'left' ? '← Merged to left' : 'Merged to right →';
+
+    /* Fade the changed rows */
+    hunkRows.forEach(function (tr) {
+      tr.style.opacity    = '0.35';
+      tr.style.transition = 'opacity .25s';
+    });
+
+    /* Replace bar with confirmation + undo */
+    var prevLeft  = leftTA.value;
+    var prevRight = rightTA.value;
+
+    mergeRow.innerHTML =
+      '<td colspan="4"><div class="diff-merge-bar diff-merge-done">' +
+        '<span class="merge-done-label">&#10003; ' + label + '</span>' +
+        '<button class="btn-merge btn-merge-dismiss" type="button">Undo</button>' +
+      '</div></td>';
+
+    mergeRow.querySelector('.btn-merge-dismiss').addEventListener('click', function () {
+      /* restore textarea values */
+      leftTA.value  = prevLeft;
+      rightTA.value = prevRight;
+      /* restore row appearance */
+      hunkRows.forEach(function (tr) { tr.style.opacity = ''; });
+      mergeRow.remove();
+      buildMergeRows();
+      if (window.diffMinimapRebuild) window.diffMinimapRebuild();
+    });
+
+    if (window.diffMinimapRebuild) window.diffMinimapRebuild();
+  }
+
+  /* ── Init ───────────────────────────────────────────────────── */
+  setTimeout(buildMergeRows, 400);
+
+  var btnSide = document.getElementById('btnSide');
+  if (btnSide) btnSide.addEventListener('click', function () { setTimeout(buildMergeRows, 160); });
 })();
 </script>

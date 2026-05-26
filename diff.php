@@ -324,15 +324,82 @@ function apply_inline_unified(array &$uniRows): void {
 
 // Apply inline word/char diff across adjacent del/add in side-by-side rows.
 function apply_inline_sxs(array &$sideRows): void {
-    for ($i=0; $i<count($sideRows)-1; $i++) {
-        $a=$sideRows[$i]; $b=$sideRows[$i+1];
-        if ($a['lclass']==='del' && $b['rclass']==='add') {
-            [$L,$R] = inline_diff((string)$a['lhtml'], (string)$b['rhtml']);
+    for ($i=0; $i<count($sideRows); $i++) {
+        $a=$sideRows[$i];
+        // Case 1: already merged into a single del+add row (after pair_sxs_hunks)
+        if ($a['lclass']==='del' && $a['rclass']==='add') {
+            [$L,$R] = inline_diff((string)$a['lhtml'], (string)$a['rhtml']);
             $sideRows[$i]['lhtml']=$L; $sideRows[$i]['l_intra']=true;
-            $sideRows[$i+1]['rhtml']=$R; $sideRows[$i+1]['r_intra']=true;
+            $sideRows[$i]['rhtml']=$R; $sideRows[$i]['r_intra']=true;
+            continue;
+        }
+        // Case 2: separate del row followed by add row (shouldn't happen after pairing, but kept as fallback)
+        if ($i < count($sideRows)-1) {
+            $b=$sideRows[$i+1];
+            if ($a['lclass']==='del' && $b['rclass']==='add') {
+                [$L,$R] = inline_diff((string)$a['lhtml'], (string)$b['rhtml']);
+                $sideRows[$i]['lhtml']=$L; $sideRows[$i]['l_intra']=true;
+                $sideRows[$i+1]['rhtml']=$R; $sideRows[$i+1]['r_intra']=true;
+                $i++;
+            }
+        }
+    }
+}
+
+/**
+ * Merge adjacent del+add row pairs into single side-by-side rows.
+ *
+ * The diff engine emits each deleted line as its own row (lclass=del, rclass=empty)
+ * and each added line as its own row (lclass=empty, rclass=add). When a hunk has
+ * N deletions followed by M additions we zip the first min(N,M) pairs together so
+ * that the changed lines sit on the same table row, matching the GitHub/VS Code style.
+ * Any leftover del-only or add-only lines keep their existing empty-cell row.
+ */
+function pair_sxs_hunks(array $sideRows): array {
+    $out = [];
+    $n   = count($sideRows);
+    $i   = 0;
+    while ($i < $n) {
+        $row = $sideRows[$i];
+        // Collect a run of pure-del rows
+        if ($row['lclass'] === 'del' && $row['rclass'] === 'empty') {
+            $dels = [];
+            while ($i < $n && $sideRows[$i]['lclass'] === 'del' && $sideRows[$i]['rclass'] === 'empty') {
+                $dels[] = $sideRows[$i++];
+            }
+            // Collect the following run of pure-add rows
+            $adds = [];
+            while ($i < $n && $sideRows[$i]['lclass'] === 'empty' && $sideRows[$i]['rclass'] === 'add') {
+                $adds[] = $sideRows[$i++];
+            }
+            // Zip pairs together
+            $pairs = min(count($dels), count($adds));
+            for ($p = 0; $p < $pairs; $p++) {
+                $out[] = [
+                    'lno'     => $dels[$p]['lno'],
+                    'rno'     => $adds[$p]['rno'],
+                    'lclass'  => 'del',
+                    'rclass'  => 'add',
+                    'lhtml'   => $dels[$p]['lhtml'],
+                    'rhtml'   => $adds[$p]['rhtml'],
+                    'l_intra' => false,
+                    'r_intra' => false,
+                ];
+            }
+            // Leftover del-only rows
+            for ($p = $pairs; $p < count($dels); $p++) {
+                $out[] = $dels[$p];
+            }
+            // Leftover add-only rows
+            for ($p = $pairs; $p < count($adds); $p++) {
+                $out[] = $adds[$p];
+            }
+        } else {
+            $out[] = $row;
             $i++;
         }
     }
+    return $out;
 }
 
 /* =========================================================
@@ -885,6 +952,9 @@ $GLOBALS['diff_changes_total']  = $changed_total; // theme uses this for ±T
 
 /* ---------- Build tables server-side ---------- */
 [$sideRows, $uniRows] = build_tables_idx($ops, $leftLines, $rightLines);
+
+/* ---------- Pair adjacent del+add rows into single side-by-side rows ---------- */
+$sideRows = pair_sxs_hunks($sideRows);
 
 /* ---------- Limit expensive inline diff pass for very large diffs ---------- */
 $perform_inline = true;
