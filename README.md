@@ -50,7 +50,7 @@
 [![Download PASTE](https://img.shields.io/sourceforge/dt/phpaste.svg)](https://sourceforge.net/projects/phpaste/files/latest/download)%>
 
 Paste is forked from the original source pastebin.com used before it was bought.
-The original source is available from the previous owner's **[GitHub repository](https://github.com/lordelph/pastebin)**
+The original source is available from the previous owner's **[GitHub repository](https://github.com/aiattorneymode/PASTE.0xmonti.net
 
 A public version can be found **[here](https://paste.boxlabs.uk/)**
 
